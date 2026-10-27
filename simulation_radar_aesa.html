@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Simulation radar AESA</title>
+<style>
+  body{margin:0;background:#050a07;color:#8fe3ad;font-family:Consolas,"Courier New",monospace;display:flex;flex-direction:column;align-items:center;padding:16px;box-sizing:border-box}
+  h1{font-size:18px;margin:4px 0}
+  h2{font-size:14px;margin:12px 0 6px;color:#b8ffd0}
+  p.note{font-size:12px;color:#5f8f70;max-width:900px;text-align:center}
+  #wrap{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;align-items:flex-start}
+  canvas#c{background:#03120a;border:1px solid #1f4a2f;border-radius:50%;max-width:100%;height:auto;cursor:crosshair}
+  #side{width:320px;font-size:13px;max-width:100%}
+  #controls{margin-bottom:12px;display:flex;flex-direction:column;gap:8px}
+  button{background:#0c2a18;color:#8fe3ad;border:1px solid #1f4a2f;padding:6px 10px;cursor:pointer;font-family:inherit}
+  button:hover{background:#15402a}
+  #stats{margin-bottom:10px;line-height:1.5}
+  #agents{display:grid;gap:7px;margin:10px 0}
+  .agent{border:1px solid #1f4a2f;background:#071a10;padding:8px;line-height:1.45;font-size:12px}
+  .agent h3{margin:0 0 4px;color:#b8ffd0;font-size:13px}
+  .agent.master{border-color:#74d99a}
+  .agent p{margin:3px 0;color:#b2d8be}
+  .agent .confidence{color:#75aa87;font-size:11px}
+  .agent-controls{border:1px solid #1f4a2f;background:#071a10;padding:9px;margin:10px 0;display:grid;gap:7px}
+  .agent-controls input{box-sizing:border-box;width:100%;background:#03120a;color:#b8ffd0;border:1px solid #1f4a2f;padding:6px;font:inherit}
+  #aiStatus{font-size:11px;color:#90b69b}
+  #activity{font-size:11px;max-height:120px;overflow:auto;border-top:1px solid #1f4a2f;padding-top:6px}
+  #formula{border:1px solid #1f4a2f;padding:8px;line-height:1.6;font-size:12px;background:#071a10;min-height:150px}
+  #plots{border-top:1px solid #1f4a2f;padding-top:8px;line-height:1.6;min-height:120px;margin-top:10px}
+  details{margin-top:12px;border-top:1px solid #1f4a2f;padding-top:8px;line-height:1.5;font-size:12px}
+  summary{cursor:pointer;color:#b8ffd0;font-size:13px}
+  .legend span{display:inline-block;margin-right:10px}
+</style>
+</head>
+<body>
+<h1>Simulation radar AESA (pédagogique)</h1>
+<p class="note">Simulation entièrement fictive à but pédagogique. Le radar et les pistes continuent en temps réel. Les cinq agents sont alimentés par un modèle local Ollama ; aucune clé ni donnée de simulation n’est envoyée à un service d’IA cloud.</p>
+<div id="wrap">
+  <canvas id="c" width="800" height="800"></canvas>
+  <div id="side">
+    <div id="controls">
+      <button id="pause">Pause</button>
+      <label>Vitesse de simulation
+        <select id="speed">
+          <option value="1">x1</option>
+          <option value="4" selected>x4</option>
+          <option value="10">x10</option>
+        </select>
+      </label>
+      <label>Brouillage (hausse du seuil) : +<span id="nv">0</span> dB<br>
+        <input id="noise" type="range" min="0" max="15" value="0" style="width:100%">
+      </label>
+      <label><input id="truth" type="checkbox"> Afficher les noms des appareils (vérité terrain)</label>
+      <label><input id="waves" type="checkbox" checked> Afficher les chemins d'onde</label>
+      <button id="add">Ajouter un appareil</button>
+      <button id="addBird">Ajouter un écho aviaire</button>
+      <button id="addDrone">Ajouter un petit drone simulé</button>
+    </div>
+    <section class="agent-controls">
+      <b>Agents IA locaux (Ollama)</b>
+      <label>Modèle local
+        <select id="model">
+          <option value="qwen3.5:4b" selected>Qwen3.5 4B · ~3,3 Go (conseillé pour commencer)</option>
+          <option value="qwen3.5:9b">Qwen3.5 9B · ~6,6 Go</option>
+          <option value="qwen3.5:27b">Qwen3.5 27B · ~17 Go</option>
+          <option value="gemma4:e4b">Gemma 4 E4B · ~6,6 Go</option>
+        </select>
+      </label>
+      <button id="agentToggle">Lancer les agents IA locaux</button>
+      <div id="aiStatus" role="status">Radar actif ; agents IA locaux à l’arrêt.</div>
+      <small>Chaque cycle lance 4 spécialistes en parallèle, puis le Master. Le modèle tourne sur ce PC ; les réponses peuvent être lentes selon ses composants.</small>
+    </section>
+    <div id="stats"></div>
+    <h2>Agents en action</h2>
+    <div id="agents" aria-live="polite">
+      <section class="agent master"><h3>1 · Master — coordination</h3><p id="masterText">En attente du premier cycle IA. Le Master synthétisera les retours des quatre spécialistes.</p></section>
+      <section class="agent"><h3>2 · Militaire — lecture défense</h3><p id="militaryText">En attente d’analyse.</p><p class="confidence" id="militaryConfidence"></p></section>
+      <section class="agent"><h3>3 · Commercial — circulation civile</h3><p id="commercialText">En attente d’analyse.</p><p class="confidence" id="commercialConfidence"></p></section>
+      <section class="agent"><h3>4 · Aviaire — échos d’oiseaux</h3><p id="avianText">En attente d’analyse.</p><p class="confidence" id="avianConfidence"></p></section>
+      <section class="agent"><h3>5 · Anti-drone — petites pistes lentes</h3><p id="droneText">En attente d’analyse.</p><p class="confidence" id="droneConfidence"></p></section>
+    </div>
+    <div id="activity" aria-live="polite">Journal des cycles IA : en attente.</div>
+    <h2>Formule de la cible sélectionnée</h2>
+    <div id="formula">Clique sur un appareil sur l'écran.</div>
+    <div id="plots"></div>
+    <details>
+      <summary>Comment lire les agents</summary>
+      <p>À chaque cycle, les quatre spécialistes analysent séparément les mêmes mesures radar simulées. Le Master lit leurs quatre comptes rendus et en fait une synthèse.</p>
+      <p>Les pistes, vitesses et surfaces équivalentes sont inventées pour l’exercice. Un radar ne reconnaît pas directement un oiseau ou un drone : les rôles aviaire et anti-drone formulent des hypothèses à partir de signatures incertaines.</p>
+      <p>Le modèle ne commande pas le radar et ne déclenche aucune action dans le monde réel. La simulation montre comment des rôles spécialisés peuvent discuter d’observations incomplètes.</p>
+    </details>
+  </div>
+</div>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const CX = 400, CY = 400, RPX = 380, RMAX = 100;   // rayon écran en px, portée en km
+const K = RPX / RMAX;
+const SCAN = 100;        // vitesse du faisceau électronique (degrés/s)
+const NTGT = 7;          // nombre d'appareils simultanés
+const FA_RATE = 0.0015;  // fausses alarmes par frame (clutter)
+
+// sigma : surface équivalente radar en m² (valeurs indicatives et fictives)
+const TYPES = {
+  chasseur: { nom: 'Avion de chasse', sigma: 3,    speed: 0.6,  color: '#ff5a5a', shape: 'fighter' },
+  ligne:    { nom: 'Avion de ligne',  sigma: 40,   speed: 0.25, color: '#ffd24a', shape: 'airliner' },
+  cargo:    { nom: 'Avion cargo',     sigma: 25,   speed: 0.2,  color: '#ff9a3c', shape: 'cargo' },
+  leger:    { nom: 'Avion léger',     sigma: 1.5,  speed: 0.08, color: '#7fd6ff', shape: 'light' },
+  heli:     { nom: 'Hélicoptère',     sigma: 6,    speed: 0.07, color: '#6dffb0', shape: 'heli' },
+  drone:    { nom: 'Petit drone fictif', sigma: 0.01, speed: 0.05, color: '#ff7ad9', shape: 'drone' },
+  bird:     { nom: 'Groupe d’oiseaux fictif', sigma: 0.02, speed: 0.015, color: '#c6bbff', shape: 'bird' }
+};
+
+let targets = [], blips = [], plots = [];
+let beam = 0, simT = 0, paused = false, timeScale = 4, thr = 12, truth = false, showWaves = true;
+let selectedId = null, nextId = 1;
+const stats = { dwells: 0, det: 0, fa: 0 };
+
+const toXY = (x, y) => [CX + x * K, CY - y * K];
+const bearing = (x, y) => (Math.atan2(x, y) * 180 / Math.PI + 360) % 360;
+const cls = s => s > 20 ? 'Grand écho' : s > 1 ? 'Moyen écho' : 'Petit écho';
+
+// Équation radar simplifiée : SNR (dB) = 50 + 10log10(σ) - 40log10(R / 10 km)
+// Pr ∝ σ / R⁴ : la constante 50 dB regroupe Pt, G, λ, le bruit, etc.
+function snr(sigma, R) { return 50 + 10 * Math.log10(sigma) - 40 * Math.log10(Math.max(R, 0.5) / 10); }
+// Probabilité de détection : sigmoïde autour du seuil
+function pd(s) { return 1 / (1 + Math.exp(-(s - thr) / 1.5)); }
+// Inversion de l'équation pour estimer σ à partir du SNR mesuré
+function estSigma(s, R) { return Math.pow(10, (s - 50 + 40 * Math.log10(Math.max(R, 0.5) / 10)) / 10); }
+
+function spawn(kind = null) {
+  const keys = Object.keys(TYPES);
+  const k = kind || keys[Math.random() * keys.length | 0];
+  const a = Math.random() * 2 * Math.PI, r = RMAX * 1.05;
+  const x = r * Math.sin(a), y = r * Math.cos(a);
+  const tx = (Math.random() - 0.5) * 60, ty = (Math.random() - 0.5) * 60;
+  const dx = tx - x, dy = ty - y, L = Math.hypot(dx, dy), sp = TYPES[k].speed;
+  targets.push({ id: nextId++, k, x, y, vx: dx / L * sp, vy: dy / L * sp });
+}
+
+// Vrai si le faisceau est passé sur le relèvement b pendant le pas (from -> to, sens horaire)
+function sweepHas(b, from, to) {
+  const span = (to - from + 360) % 360, d = (b - from + 360) % 360;
+  return d < span && span < 180;
+}
+
+function detect(x, y, R, b, s, fake) {
+  if (!fake) {
+    stats.det++;
+    plots.unshift({ t: simT, R, b, est: estSigma(s, R) });
+    if (plots.length > 12) plots.pop();
+  }
+  blips.push({ x, y, t: simT, fake });
+}
+
+function radarSnapshot() {
+  const tracks = targets.map(t => {
+    const R = Math.hypot(t.x, t.y);
+    const radial = R ? (t.x * t.vx + t.y * t.vy) / R : 0;
+    const measuredSnr = snr(TYPES[t.k].sigma, R) + (Math.random() - 0.5) * 3;
+    return {
+      track: `P${t.id}`,
+      range_km: Number(R.toFixed(1)),
+      bearing_deg: Number(bearing(t.x, t.y).toFixed(0)),
+      measured_radial_speed_mps: Number((radial * 1000).toFixed(1)),
+      estimated_rcs_m2: Number(estSigma(measuredSnr, R).toFixed(3)),
+      estimated_snr_db: Number(measuredSnr.toFixed(1)),
+      detection_likelihood_pct: Number((pd(measuredSnr) * 100).toFixed(0))
+    };
+  });
+  return { simulated_time_s: Number(simT.toFixed(1)), threshold_db: thr, false_alarm_count: stats.fa, tracks };
+}
+
+function step(dt) {
+  const from = beam;
+  beam = (beam + SCAN * dt) % 360;
+  simT += dt;
+
+  for (const t of targets) { t.x += t.vx * dt; t.y += t.vy * dt; }
+  targets = targets.filter(t => Math.hypot(t.x, t.y) < RMAX * 1.1);
+  if (selectedId !== null && !targets.some(t => t.id === selectedId)) selectedId = null;
+  while (targets.length < NTGT) spawn();
+
+  for (const t of targets) {
+    const R = Math.hypot(t.x, t.y), b = bearing(t.x, t.y);
+    if (sweepHas(b, from, beam)) {
+      stats.dwells++;
+      const s = snr(TYPES[t.k].sigma, R) + (Math.random() - 0.5) * 4; // fluctuation de l'écho
+      if (Math.random() < pd(s)) detect(t.x, t.y, R, b, s, false);
+    }
+  }
+
+  if (Math.random() < FA_RATE * dt * 60) {
+    const R = 5 + Math.random() * (RMAX - 5), r = beam * Math.PI / 180;
+    stats.fa++;
+    detect(R * Math.sin(r), R * Math.cos(r), R, beam, 0, true);
+  }
+}
+
+// Dessin d'un appareil dans son repère local (le nez pointe vers +x)
+function drawShape(shape, color) {
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  switch (shape) {
+    case 'fighter':   // avion de chasse : aile delta
+      ctx.moveTo(9, 0); ctx.lineTo(-6, -7); ctx.lineTo(-3, 0); ctx.lineTo(-6, 7); ctx.closePath();
+      break;
+    case 'airliner':  // avion de ligne : fuselage long, ailes droites
+      ctx.moveTo(-9, 0); ctx.lineTo(9, 0);
+      ctx.moveTo(3, -9); ctx.lineTo(-2, 0); ctx.lineTo(3, 9);
+      ctx.moveTo(-7, -4); ctx.lineTo(-9, 0); ctx.lineTo(-7, 4);
+      break;
+    case 'cargo':     // avion cargo : fuselage épais, grandes ailes
+      ctx.lineWidth = 3;
+      ctx.moveTo(-10, 0); ctx.lineTo(10, 0);
+      ctx.lineWidth = 1.5;
+      ctx.moveTo(2, -11); ctx.lineTo(-3, 0); ctx.lineTo(2, 11);
+      ctx.moveTo(-8, -4); ctx.lineTo(-10, 0); ctx.lineTo(-8, 4);
+      break;
+    case 'light':     // avion léger : petit, ailes hautes
+      ctx.moveTo(-5, 0); ctx.lineTo(6, 0);
+      ctx.moveTo(1, -7); ctx.lineTo(1, 7);
+      ctx.moveTo(-5, -3); ctx.lineTo(-6, 0); ctx.lineTo(-5, 3);
+      break;
+    case 'heli':      // hélicoptère : cabine, rotor, rotor arrière
+      ctx.arc(0, 0, 3, 0, 2 * Math.PI);
+      ctx.moveTo(-8, 0); ctx.lineTo(8, 0);
+      ctx.moveTo(-3, 0); ctx.lineTo(-9, 0);
+      break;
+    case 'drone':     // drone : petit quadrirotor en X
+      ctx.moveTo(-5, -5); ctx.lineTo(5, 5);
+      ctx.moveTo(-5, 5); ctx.lineTo(5, -5);
+      ctx.arc(0, 0, 1.5, 0, 2 * Math.PI);
+      break;
+    case 'bird':      // groupe d'oiseaux stylisé
+      ctx.moveTo(-7, 2); ctx.quadraticCurveTo(-4, -4, 0, 1); ctx.quadraticCurveTo(4, -4, 7, 2);
+      break;
+  }
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+function draw() {
+  ctx.fillStyle = '#03120a';
+  ctx.fillRect(0, 0, 800, 800);
+
+  // Anneaux de distance
+  ctx.strokeStyle = 'rgba(80,200,130,.25)';
+  ctx.fillStyle = 'rgba(120,220,160,.6)';
+  ctx.font = '11px Consolas, monospace';
+  for (let km = 20; km <= RMAX; km += 20) {
+    ctx.beginPath();
+    ctx.arc(CX, CY, km * K, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillText(km + ' km', CX + km * K + 3, CY - 3);
+  }
+  // Relèvements (0° = nord, sens horaire)
+  for (let d = 0; d < 360; d += 30) {
+    const p = (d - 90) * Math.PI / 180;
+    ctx.beginPath();
+    ctx.moveTo(CX, CY);
+    ctx.lineTo(CX + RPX * Math.cos(p), CY + RPX * Math.sin(p));
+    ctx.stroke();
+  }
+  ctx.fillText('N', CX - 4, CY - RPX + 14);
+
+  // Traînée du faisceau
+  for (let k = 0; k < 45; k++) {
+    const a0 = beam - k - 1, a1 = beam - k;
+    ctx.beginPath();
+    ctx.moveTo(CX, CY);
+    ctx.arc(CX, CY, RPX, (a0 - 90) * Math.PI / 180, (a1 - 90) * Math.PI / 180);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(90,255,150,${0.22 * (1 - k / 45)})`;
+    ctx.fill();
+  }
+  // Ligne du faisceau
+  const p = (beam - 90) * Math.PI / 180;
+  ctx.strokeStyle = '#b8ffd0';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(CX, CY);
+  ctx.lineTo(CX + RPX * Math.cos(p), CY + RPX * Math.sin(p));
+  ctx.stroke();
+  ctx.lineWidth = 1;
+
+  // Chemins d'onde aller-retour : radar -> appareil -> radar
+  for (const t of targets) {
+    const [X, Y] = toXY(t.x, t.y);
+    if (showWaves) {
+      ctx.strokeStyle = 'rgba(120,255,170,.25)';
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(CX, CY);
+      ctx.lineTo(X, Y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const phase = (simT * 0.5 + t.id * 0.37) % 1;
+      const f = phase < 0.5 ? phase * 2 : (phase - 0.5) * 2;
+      const px = phase < 0.5 ? CX + (X - CX) * f : X + (CX - X) * f;
+      const py = phase < 0.5 ? CY + (Y - CY) * f : Y + (CY - Y) * f;
+      ctx.fillStyle = phase < 0.5 ? '#b8ffd0' : '#ffffff';
+      ctx.beginPath();
+      ctx.arc(px, py, 2.5, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+  }
+
+  // Appareils (silhouettes orientées selon leur cap)
+  for (const t of targets) {
+    const [X, Y] = toXY(t.x, t.y);
+    const ang = Math.atan2(-t.vy, t.vx);
+    ctx.save();
+    ctx.translate(X, Y);
+    ctx.rotate(ang);
+    drawShape(TYPES[t.k].shape, TYPES[t.k].color);
+    ctx.restore();
+    if (t.id === selectedId) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(X, Y, 13, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+    if (truth) {
+      ctx.fillStyle = TYPES[t.k].color;
+      ctx.fillText(TYPES[t.k].nom, X + 10, Y + 12);
+    }
+  }
+
+  // Échos détectés (disparaissent après 6 s)
+  blips = blips.filter(b => simT - b.t < 6);
+  for (const b of blips) {
+    const age = (simT - b.t) / 6, [X, Y] = toXY(b.x, b.y);
+    ctx.fillStyle = b.fake ? `rgba(160,160,160,${1 - age})` : `rgba(150,255,180,${1 - age})`;
+    ctx.beginPath();
+    ctx.arc(X, Y, b.fake ? 2 : 3.5, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+}
+
+function renderPanel() {
+  document.getElementById('stats').innerHTML =
+    `Passages du faisceau : ${stats.dwells}<br>` +
+    `Détections : ${stats.det}<br>` +
+    `Fausses alarmes : ${stats.fa}<br>` +
+    `Temps simulé : ${simT.toFixed(0)} s`;
+  document.getElementById('plots').innerHTML =
+    '<b>Derniers échos détectés</b><br>' +
+    plots.map(p => `${p.t.toFixed(1)} s · ${p.R.toFixed(0)} km · ${p.b.toFixed(0)}° · ${cls(p.est)}`).join('<br>');
+  renderFormula();
+}
+
+function renderFormula() {
+  const box = document.getElementById('formula');
+  const t = targets.find(t => t.id === selectedId);
+  if (!t) { box.innerHTML = 'Clique sur un appareil sur l\'écran.'; return; }
+  const R = Math.hypot(t.x, t.y), s = snr(TYPES[t.k].sigma, R), p = pd(s);
+  const v = Math.hypot(t.vx, t.vy) * 1000;
+  box.innerHTML =
+    `<b>${TYPES[t.k].nom}</b><br>` +
+    `Distance R = ${R.toFixed(1)} km<br>` +
+    `Vitesse = ${v.toFixed(0)} m/s<br>` +
+    `Surface équivalente σ = ${TYPES[t.k].sigma} m²<br><br>` +
+    `<b>Équation radar</b><br>` +
+    `Pr = (Pt · G² · λ² · σ) / ((4π)³ · R⁴)<br>` +
+    `Donc Pr ∝ σ / R⁴<br><br>` +
+    `<b>Rapport signal / bruit</b><br>` +
+    `SNR = 50 + 10·log10(σ) − 40·log10(R / 10 km)<br>` +
+    `SNR = ${s.toFixed(1)} dB<br><br>` +
+    `<b>Probabilité de détection</b><br>` +
+    `Pd ≈ 1 / (1 + e^(−(SNR − seuil) / 1.5))<br>` +
+    `seuil = ${thr} dB → Pd ≈ ${(p * 100).toFixed(0)} %`;
+}
+
+document.getElementById('pause').onclick = e => {
+  paused = !paused;
+  e.target.textContent = paused ? 'Reprendre' : 'Pause';
+};
+document.getElementById('speed').onchange = e => timeScale = +e.target.value;
+document.getElementById('noise').oninput = e => {
+  thr = 12 + +e.target.value;
+  document.getElementById('nv').textContent = e.target.value;
+};
+document.getElementById('truth').onchange = e => truth = e.target.checked;
+document.getElementById('waves').onchange = e => showWaves = e.target.checked;
+document.getElementById('add').onclick = () => spawn();
+document.getElementById('addBird').onclick = () => spawn('bird');
+document.getElementById('addDrone').onclick = () => spawn('drone');
+
+let agentsRunning = false, cycleNumber = 0, cycleBusy = false, agentTimer = null;
+const agentStatus = document.getElementById('aiStatus');
+const activity = document.getElementById('activity');
+function logAgentCycle(message) {
+  const row = document.createElement('div');
+  row.textContent = `${new Date().toLocaleTimeString('fr-FR')} · ${message}`;
+  activity.prepend(row);
+  while (activity.children.length > 6) activity.lastElementChild.remove();
+}
+function showAgent(key, textId, confidenceId) {
+  const item = key === 'militaire' ? latestAgents?.militaire
+    : key === 'commercial' ? latestAgents?.commercial
+    : key === 'aviaire' ? latestAgents?.aviaire : latestAgents?.anti_drone;
+  document.getElementById(textId).textContent = item?.action || item?.observation || 'Aucun retour reçu.';
+  const confidence = item?.confiance;
+  document.getElementById(confidenceId).textContent = confidence ? `Confiance déclarée par le modèle : ${confidence}` : '';
+}
+let latestAgents = null;
+async function runAgentCycle() {
+  if (!agentsRunning || cycleBusy) return;
+  if (location.protocol === 'file:') {
+    agentStatus.textContent = 'Ouvrez « Lancer la simulation.bat », puis accédez à http://127.0.0.1:8765.';
+    stopAgents();
+    return;
+  }
+  const model = document.getElementById('model').value;
+  cycleBusy = true;
+  cycleNumber++;
+  agentStatus.textContent = `Cycle ${cycleNumber} : les quatre spécialistes analysent les mesures…`;
+  try {
+    const response = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, cycle: cycleNumber, observations: radarSnapshot() })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Erreur pendant l’analyse.');
+    latestAgents = data.agents;
+    document.getElementById('masterText').textContent = `${latestAgents.master?.synthese || 'Synthèse indisponible'} Priorité : ${latestAgents.master?.priorite || 'à préciser'}. Coordination : ${latestAgents.master?.coordination || 'vérification humaine.'}`;
+    showAgent('militaire', 'militaryText', 'militaryConfidence');
+    showAgent('commercial', 'commercialText', 'commercialConfidence');
+    showAgent('aviaire', 'avianText', 'avianConfidence');
+    showAgent('anti_drone', 'droneText', 'droneConfidence');
+    agentStatus.textContent = `Cycle ${cycleNumber} terminé avec ${data.model} · mesures à t=${simT.toFixed(0)} s.`;
+    logAgentCycle(`cycle ${cycleNumber} terminé ; retour des 5 rôles.`);
+  } catch (error) {
+    agentStatus.textContent = `Cycle IA en échec : ${error.message}`;
+    logAgentCycle(`échec du cycle ${cycleNumber} : ${error.message}`);
+  } finally { cycleBusy = false; }
+}
+function stopAgents() {
+  agentsRunning = false;
+  clearInterval(agentTimer);
+  agentTimer = null;
+  document.getElementById('agentToggle').textContent = 'Lancer les agents IA';
+  if (!agentStatus.textContent.startsWith('Cycle IA en échec') && !agentStatus.textContent.startsWith('Ouvrez') && !agentStatus.textContent.startsWith('Saisissez')) agentStatus.textContent = 'Radar actif ; agents IA à l’arrêt.';
+}
+document.getElementById('agentToggle').onclick = () => {
+  if (agentsRunning) { stopAgents(); logAgentCycle('agents mis en pause.'); return; }
+  if (location.protocol === 'file:') {
+    agentStatus.textContent = 'Ouvrez « Lancer la simulation.bat », puis accédez à http://127.0.0.1:8765.';
+    return;
+  }
+  agentsRunning = true;
+  document.getElementById('agentToggle').textContent = 'Mettre les agents en pause';
+  runAgentCycle();
+  agentTimer = setInterval(runAgentCycle, 10000);
+};
+
+// Sélection d'un appareil au clic (rayon de 14 px)
+cv.addEventListener('click', e => {
+  const r = cv.getBoundingClientRect();
+  const mx = (e.clientX - r.left) * cv.width / r.width;
+  const my = (e.clientY - r.top) * cv.height / r.height;
+  let best = null, bestD = 14;
+  for (const t of targets) {
+    const [X, Y] = toXY(t.x, t.y);
+    const d = Math.hypot(X - mx, Y - my);
+    if (d < bestD) { bestD = d; best = t.id; }
+  }
+  selectedId = best;
+  renderFormula();
+});
+
+for (let i = 0; i < NTGT; i++) spawn();
+let last = performance.now(), frameN = 0;
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (!paused) step(dt * timeScale);
+  draw();
+  if (++frameN % 10 === 0) renderPanel();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

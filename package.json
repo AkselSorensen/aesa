@@ -1,0 +1,13 @@
+{
+  "name": "simulation-radar-aesa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simulation radar AESA pédagogique (fictive)",
+  "main": "serveur_simulation.js",
+  "scripts": {
+    "start": "node serveur_simulation.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
