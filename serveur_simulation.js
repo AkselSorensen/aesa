@@ -3,8 +3,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = __dirname;
-const PORT = 8765;
-const HOST = '127.0.0.1';
+const PORT = Number(process.env.PORT) || 8765;
+const HOST = process.env.HOST || '127.0.0.1';
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
 const htmlPath = path.join(ROOT, 'simulation_radar_aesa.html');
 
 function send(res, status, data, type = 'application/json; charset=utf-8') {
@@ -30,7 +31,7 @@ const server = http.createServer(async (req, res) => {
   const model = typeof payload.model === 'string' && /^[a-zA-Z0-9:._/-]{1,80}$/.test(payload.model) ? payload.model : 'qwen3.5:4b';
   try {
     async function askAgent(instructions, input) {
-      const response = await fetch('http://127.0.0.1:11434/api/chat', {
+      const response = await fetch(`${OLLAMA_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, messages: [
