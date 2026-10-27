@@ -1,0 +1,943 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ville radar 3D pédagogique</title>
+<style>
+  html,body{margin:0;height:100%;background:#050a07;color:#8fe3ad;font-family:Consolas,"Courier New",monospace;overflow:hidden}
+  #view{position:fixed;inset:0}
+  .panel{position:fixed;background:rgba(5,16,10,.9);border:1px solid #1f4a2f;padding:10px;font-size:12px;line-height:1.5;max-height:90vh;overflow:auto;box-sizing:border-box}
+  #left{top:10px;left:10px;width:280px}
+  #right{top:10px;right:10px;width:300px}
+  #bottom{bottom:10px;right:10px;width:300px}
+  h1{font-size:15px;margin:0 0 6px;color:#b8ffd0}
+  h2{font-size:13px;margin:8px 0 4px;color:#b8ffd0}
+  button{background:#0c2a18;color:#8fe3ad;border:1px solid #1f4a2f;padding:5px 9px;cursor:pointer;font-family:inherit;margin:2px 4px 2px 0}
+  button:hover{background:#15402a}
+  select{font-family:inherit;background:#03120a;color:#b8ffd0;border:1px solid #1f4a2f}
+  label{display:block;margin:5px 0}
+  p{margin:4px 0}
+  details summary{cursor:pointer;color:#b8ffd0;font-size:13px}
+  #agents{bottom:10px;left:10px;width:510px;max-height:38vh}
+  .agent{border-top:1px solid #1f4a2f;padding:5px 0}
+  .agent b{color:#b8ffd0}
+  .agent small{color:#a7b9ac}
+  #aiStatus{color:#ffd98a}
+  @media (max-width:700px){ .panel{width:auto!important;left:6px!important;right:6px!important;max-height:38vh} #right{top:auto;bottom:40vh;max-height:28vh} #left{top:6px} #bottom{display:none} #agents{bottom:6px;max-height:38vh} }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="view"></div>
+
+<div id="left" class="panel">
+  <h1>Ville radar 3D pédagogique</h1>
+  <p>Simulation pédagogique : les profils apparaissent continuellement au hasard parmi les 24 types disponibles, jusqu’à 40 appareils suivis. L’équation radar décide seule si un écho est détecté; les agents analysent ensuite des mesures bruitées. Échelle : 1 unité = 100 m, appareils agrandis pour la lisibilité.</p>
+  <button id="pause">Pause</button>
+  <label>Vitesse
+    <select id="speed">
+      <option value="1">x1</option>
+      <option value="4" selected>x4</option>
+      <option value="10">x10</option>
+    </select>
+  </label>
+  <label>Brouillage (hausse du seuil) : +<span id="nv">0</span> dB
+    <input id="noise" type="range" min="0" max="15" value="0" style="width:100%">
+  </label>
+  <label><input id="waves" type="checkbox" checked> Chemins d'onde</label>
+  <label><input id="names" type="checkbox"> Vérité terrain (mode enseignant)</label>
+  <label>Profil à ajouter
+    <select id="profile"><option value="">Aléatoire parmi les profils</option></select>
+  </label>
+  <button id="add">Ajouter un appareil</button>
+  <div id="stats"></div>
+</div>
+
+<div id="right" class="panel">
+  <h2>Cible sélectionnée</h2>
+  <div id="formula">Clique sur un appareil dans la scène.</div>
+  <h2>Derniers échos</h2>
+  <div id="plots"></div>
+</div>
+
+<div id="bottom" class="panel">
+  <h2>Calcul radar en temps réel</h2>
+  <div id="live">Clique sur un appareil pour voir le calcul.</div>
+</div>
+
+<div id="agents" class="panel">
+  <h2>Les 5 agents en action</h2>
+  <p>Quatre agents spécialisés lisent les mesures simulées; le Master local les synthétise en contre-rendu.</p>
+  <p id="aiStatus">IA locale : vérification…</p>
+  <button id="connectAI">Connecter / vérifier l’IA locale</button>
+  <p><button id="exportCsv">Télécharger les analyses CSV</button> <small id="csvStatus">Stockage local : initialisation…</small></p>
+  <div id="agentMeasurements"></div>
+  <div id="agentReports"></div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// Unité de scène : 1 unité = 100 m, donc 1 km = 10 unités.
+const TOWER_H = 4.2;                                   // tour centrale : 420 m
+const RADAR = new THREE.Vector3(0, TOWER_H + 0.05, 0); // position du radar sur le toit
+const UP = new THREE.Vector3(0, 1, 0);
+const SCAN = 1.0;                      // balayage azimutal (rad/s)
+const BEAM_HALF = 8 * Math.PI / 180;   // demi-ouverture du faisceau (élévation fixe, donc plus large)
+const BEAM_LEN = 200;                  // portée visuelle maximale : 20 km dans cette maquette
+const NTGT = 40;
+const DWELL = 0.1;                     // durée minimale d'illumination avant décision
+const C0 = 25;                         // constante regroupant Pt, G, λ, bruit (dB)
+
+// sigma : surface équivalente radar en m² (indicative, fictive)
+// speed : vitesse en unités/s (1 unité/s = 100 m/s)
+const TYPES = {
+  // Profils fictifs et larges : pas de signature de modèle réel.
+  chasseur: { nom:'Profil militaire compact', sigma:3, speed:2.2, color:0xff5a5a, shape:'fighter', size:14, mass:9000, noise:82, contour:'compacte, ailes en flèche', engines:2, altitude:[2000,12000] },
+  entrainement: { nom:'Profil militaire léger', sigma:1.5, speed:1.2, color:0x8db9d0, shape:'light', size:10, mass:2200, noise:69, contour:'compacte, ailes droites', engines:1, altitude:[500,9000] },
+  surveillance: { nom:'Profil militaire de surveillance', sigma:12, speed:1.5, color:0xb4c7d9, shape:'airliner', size:22, mass:18000, noise:73, contour:'allongée, ailes droites', engines:2, altitude:[1500,10000] },
+  patrouille: { nom:'Profil militaire de patrouille', sigma:16, speed:1.4, color:0x7f9aa8, shape:'cargo', size:24, mass:22000, noise:75, contour:'allongée, ailes hautes', engines:4, altitude:[300,9000] },
+  transport_m: { nom:'Profil militaire de transport', sigma:45, speed:1.4, color:0x9b9b84, shape:'cargo', size:36, mass:55000, noise:81, contour:'large, ailes hautes', engines:4, altitude:[500,9000] },
+  soutien_m: { nom:'Profil militaire de grande taille', sigma:65, speed:1.8, color:0x87939a, shape:'airliner', size:42, mass:85000, noise:82, contour:'large, silhouette allongée', engines:4, altitude:[3000,12000] },
+  ligne: { nom:'Avion de ligne', sigma:40, speed:2.3, color:0xffd24a, shape:'airliner', size:38, mass:60000, noise:78, contour:'large, ailes en flèche', engines:2, altitude:[6500,12000] },
+  regional: { nom:'Avion régional', sigma:18, speed:1.7, color:0xffc15b, shape:'airliner', size:27, mass:32000, noise:76, contour:'allongée, ailes en flèche', engines:2, altitude:[4000,10500] },
+  affaires: { nom:'Avion d’affaires', sigma:5, speed:2.1, color:0x89c8f0, shape:'light', size:18, mass:13000, noise:72, contour:'compacte, ailes en flèche', engines:2, altitude:[5000,13000] },
+  cargo: { nom:'Avion cargo civil', sigma:25, speed:1.7, color:0xff9a3c, shape:'cargo', size:32, mass:45000, noise:80, contour:'large, ailes hautes', engines:4, altitude:[3500,10500] },
+  leger: { nom:'Avion léger à moteur', sigma:1.5, speed:0.9, color:0x7fd6ff, shape:'light', size:9, mass:1200, noise:68, contour:'compacte, ailes droites', engines:1, altitude:[100,5000] },
+  ultraleger: { nom:'Aéronef ultraléger', sigma:0.5, speed:0.55, color:0x9fe6be, shape:'light', size:8, mass:500, noise:62, contour:'très légère, ailes droites', engines:1, altitude:[30,3000] },
+  planeur: { nom:'Planeur', sigma:0.35, speed:0.55, color:0xd7e4f5, shape:'glider', size:16, mass:650, noise:24, contour:'longues ailes fines', engines:0, altitude:[300,6000] },
+  helicoptere: { nom:'Hélicoptère léger', sigma:4, speed:0.65, color:0x6dffb0, shape:'heli', size:11, mass:2800, noise:74, contour:'compacte, rotor visible', engines:1, altitude:[30,3500] },
+  helicoptere_lourd: { nom:'Hélicoptère lourd', sigma:10, speed:0.75, color:0x55d49a, shape:'heli', size:20, mass:10000, noise:82, contour:'large, rotor visible', engines:2, altitude:[30,6000] },
+  drone: { nom:'Multirotor télépiloté', sigma:0.01, speed:0.3, color:0xff7ad9, shape:'drone', size:0.7, mass:8, noise:55, contour:'forme compacte, plusieurs rotors', engines:4, altitude:[20,2500] },
+  drone_fixe: { nom:'Petit aéronef télépiloté à ailes fixes', sigma:0.08, speed:0.35, color:0xf598d6, shape:'fixedwing', size:3.2, mass:25, noise:50, contour:'petite silhouette à ailes fixes', engines:1, altitude:[30,4500] },
+  ballon_meteo: { nom:'Ballon météorologique', sigma:0.08, speed:0.12, color:0xe6f2ff, shape:'balloon', size:2, mass:5, noise:5, contour:'enveloppe ronde, dérive lente', engines:0, altitude:[500,15000] },
+  montgolfiere: { nom:'Montgolfière', sigma:3, speed:0.25, color:0xf0a070, shape:'balloon', size:15, mass:1800, noise:58, contour:'grande enveloppe ronde', engines:0, altitude:[50,3000] },
+  parapente: { nom:'Parapente', sigma:0.2, speed:0.2, color:0xe9a7ff, shape:'wing', size:10, mass:110, noise:20, contour:'voile souple, déplacement lent', engines:0, altitude:[20,3500] },
+  deltaplane: { nom:'Deltaplane', sigma:0.25, speed:0.45, color:0xe9cf73, shape:'wing', size:10, mass:90, noise:22, contour:'voile triangulaire', engines:0, altitude:[30,4000] },
+  cerf_volant: { nom:'Cerf-volant', sigma:0.03, speed:0.12, color:0xff8e8e, shape:'wing', size:1.5, mass:1, noise:8, contour:'petite voile, mouvement irrégulier', engines:0, altitude:[5,500] },
+  oiseau_petit: { nom:'Petit oiseau', sigma:0.005, speed:0.12, color:0xb4e6ff, shape:'bird', size:0.18, mass:0.05, noise:28, contour:'petit, battements d’ailes', engines:0, altitude:[5,2500] },
+  oiseau_moyen: { nom:'Oiseau moyen', sigma:0.02, speed:0.2, color:0x9bd5ef, shape:'bird', size:0.45, mass:0.6, noise:38, contour:'battements d’ailes', engines:0, altitude:[5,3500] },
+  oiseau_grand: { nom:'Grand oiseau', sigma:0.12, speed:0.28, color:0xd2e7f5, shape:'bird', size:1.3, mass:6, noise:45, contour:'grande silhouette, battements d’ailes', engines:0, altitude:[5,6500] }
+};
+const profileMenu = document.getElementById('profile');
+for (const [key, profile] of Object.entries(TYPES)) {
+  const option = document.createElement('option');
+  option.value = key;
+  option.textContent = profile.nom;
+  profileMenu.appendChild(option);
+}
+function chooseAutoProfile() {
+  const profiles = Object.keys(TYPES);
+  return profiles[Math.random() * profiles.length | 0];
+}
+let nextSpawnAt = 1;
+
+let thr = 12, paused = false, timeScale = 4, showWaves = true, showNames = false;
+let simT = 0, beamAz = 0, nextId = 1, selectedId = null;
+let targets = [], markers = [], plots = [];
+const stats = { dwells: 0, det: 0 };
+
+// SNR en dB : SNR = C0 + 10log10(σ) − 40log10(R / 10 km)
+function snr(sigma, Rkm) { return C0 + 10 * Math.log10(sigma) - 40 * Math.log10(Math.max(Rkm, 0.5) / 10); }
+function pd(s) { return 1 / (1 + Math.exp(-(s - thr) / 1.5)); }
+function estSigma(s, Rkm) { return Math.pow(10, (s - C0 + 40 * Math.log10(Math.max(Rkm, 0.5) / 10)) / 10); }
+const cls = s => s > 20 ? 'Grand écho' : s > 1 ? 'Moyen écho' : 'Petit écho';
+
+// --- Scène ---
+const view = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+view.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a1420);
+scene.fog = new THREE.Fog(0x0a1420, 120, 320);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(-45, 40, 70);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2, 0);
+controls.maxDistance = 250;
+controls.update();
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+sun.position.set(50, 100, 60);
+scene.add(sun);
+
+// Sol
+// Bitume des rues : bruit en canvas, répété sur le sol
+const asphaltCanvas = document.createElement('canvas');
+asphaltCanvas.width = asphaltCanvas.height = 256;
+{
+  const g = asphaltCanvas.getContext('2d');
+  g.fillStyle = '#2a2e31';
+  g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2500; i++) {
+    const v = 30 + Math.random() * 40 | 0;
+    g.fillStyle = `rgb(${v},${v},${v + 3})`;
+    g.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+  }
+}
+const asphalt = new THREE.CanvasTexture(asphaltCanvas);
+asphalt.colorSpace = THREE.SRGBColorSpace;
+asphalt.wrapS = asphalt.wrapT = THREE.RepeatWrapping;
+asphalt.repeat.set(60, 60);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(600, 600),
+  new THREE.MeshStandardMaterial({ map: asphalt, roughness: 1 })
+);
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+// --- Ville procédurale : trame de rues, immeubles de hauteurs variées ---
+const city = new THREE.Group();
+scene.add(city);
+const CELL = 2.2, HALF = 9;
+
+// Textures de façade générées en canvas : grille de fenêtres, certaines allumées
+const STYLES = [
+  { wall: '#2b3a4a', win: '#3f6e96', lit: '#ffe7a3', litChance: 0.12 },  // verre
+  { wall: '#6b6f73', win: '#2d3338', lit: '#ffd98a', litChance: 0.18 },  // béton
+  { wall: '#6b3a2e', win: '#1d2430', lit: '#ffcf7a', litChance: 0.15 }   // brique
+];
+function facadeTexture(st) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = st.wall;
+  g.fillRect(0, 0, 256, 256);
+  for (let row = 0; row < 12; row++) {
+    for (let col = 0; col < 8; col++) {
+      g.fillStyle = Math.random() < st.litChance ? st.lit : st.win;
+      g.fillRect(col * 32 + 7, row * 21 + 5, 18, 12);
+    }
+    // bandeau horizontal d'étage
+    g.fillStyle = 'rgba(0,0,0,0.25)';
+    g.fillRect(0, row * 21 + 19, 256, 2);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+const FACADES = STYLES.map(facadeTexture);
+const ROOF_MAT = new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.9 });
+const AC_MAT = new THREE.MeshStandardMaterial({ color: 0x9aa3ab, roughness: 0.6, metalness: 0.3 });
+const ANT_MAT = new THREE.MeshStandardMaterial({ color: 0xbbbbbb, metalness: 0.5 });
+
+function addBuilding(cx, cz, w, d, h, styleIdx) {
+  const geo = new THREE.BoxGeometry(w, h, d);
+  // Répétition de la texture selon la taille de la façade (1 tuile = 1 unité)
+  const facade = FACADES[styleIdx ?? (Math.random() * FACADES.length | 0)].clone();
+  facade.repeat.set(w, h);
+  facade.needsUpdate = true;
+  const mat = new THREE.MeshStandardMaterial({ map: facade, roughness: 0.7, color: 0xdddddd });
+  const b = new THREE.Mesh(geo, mat);
+  b.position.set(cx, h / 2, cz);
+  city.add(b);
+
+  // Toit : petits blocs de climatisation et, pour les grands immeubles, une antenne
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(w * 0.98, 0.01, d * 0.98), ROOF_MAT);
+  roof.position.set(cx, h + 0.005, cz);
+  city.add(roof);
+  const nAC = Math.random() * 3 | 0;
+  for (let i = 0; i < nAC; i++) {
+    const ac = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.05, 0.1), AC_MAT);
+    ac.position.set(cx + (Math.random() - 0.5) * w * 0.6, h + 0.025, cz + (Math.random() - 0.5) * d * 0.6);
+    city.add(ac);
+  }
+  if (h > 2 && Math.random() < 0.6) {
+    const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.015, 0.4, 6), ANT_MAT);
+    ant.position.set(cx, h + 0.2, cz);
+    city.add(ant);
+  }
+
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geo),
+    new THREE.LineBasicMaterial({ color: 0x3f7a5c, transparent: true, opacity: 0.45 })
+  );
+  edges.position.copy(b.position);
+  city.add(edges);
+}
+
+for (let i = -HALF; i <= HALF; i++) {
+  for (let j = -HALF; j <= HALF; j++) {
+    if (i === 0 && j === 0) continue;               // emplacement de la tour radar
+    if (Math.random() < 0.08) continue;             // parcs et espaces libres
+    const dist = Math.hypot(i, j) / HALF;           // plus haut au centre
+    const h = Math.max(0.15, Math.random() * Math.random() * 4 * (1.2 - dist));
+    const w = 1.0 + Math.random() * 0.6, d = 1.0 + Math.random() * 0.6;
+    addBuilding(i * CELL + (Math.random() - 0.5) * 0.2, j * CELL + (Math.random() - 0.5) * 0.2, w, d, h);
+  }
+}
+
+// Tour radar centrale
+addBuilding(0, 0, 1.2, 1.2, TOWER_H);
+
+// Radar AESA : mât, panneau plat (réseau d'antennes) et radôme
+const mast = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.02, 0.03, 0.12, 10),
+  new THREE.MeshStandardMaterial({ color: 0x888888 })
+);
+mast.position.set(0, TOWER_H + 0.11, 0);
+scene.add(mast);
+
+// Un vrai AESA est un réseau de modules émetteurs-récepteurs : on les représente
+// par une grille de petites antennes lumineuses dans un boîtier sombre.
+const aesaPanel = new THREE.Group();
+aesaPanel.add(new THREE.Mesh(
+  new THREE.BoxGeometry(0.8, 0.6, 0.1),
+  new THREE.MeshStandardMaterial({ color: 0x2a2f36, roughness: 0.6, metalness: 0.3 })
+));
+const COLS = 12, ROWS = 9;
+const modules = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(0.06, 0.05, 0.03),
+  new THREE.MeshStandardMaterial({ color: 0xd8e6ff, emissive: 0x3a6aff, emissiveIntensity: 0.6, metalness: 0.2, roughness: 0.4 }),
+  COLS * ROWS
+);
+const dummy = new THREE.Object3D();
+let mIdx = 0;
+for (let r = 0; r < ROWS; r++) {
+  for (let c = 0; c < COLS; c++) {
+    dummy.position.set((c - (COLS - 1) / 2) * 0.062, (r - (ROWS - 1) / 2) * 0.062, 0.065);
+    dummy.updateMatrix();
+    modules.setMatrixAt(mIdx++, dummy.matrix);
+  }
+}
+aesaPanel.add(modules);
+// Le panneau est monté sur un pivot centré au-dessus du radôme : il pivote avec le faisceau
+const aesaPivot = new THREE.Group();
+aesaPivot.position.set(0, RADAR.y + 0.2, 0);
+aesaPanel.position.set(0, 0, 0);
+aesaPanel.name = 'AESA';
+aesaPivot.add(aesaPanel);
+scene.add(aesaPivot);
+
+const radome = new THREE.Mesh(
+  new THREE.SphereGeometry(0.1, 20, 14, 0, Math.PI * 2, 0, Math.PI / 2),
+  new THREE.MeshStandardMaterial({ color: 0xdfffe9, transparent: true, opacity: 0.35 })
+);
+radome.position.set(0, TOWER_H + 0.05, 0);
+scene.add(radome);
+
+// Faisceau (cône translucide dont le sommet est sur le radar)
+const beamMesh = new THREE.Mesh(
+  new THREE.ConeGeometry(Math.tan(BEAM_HALF) * BEAM_LEN, BEAM_LEN, 24, 1, true),
+  new THREE.MeshBasicMaterial({ color: 0x5affa0, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })
+);
+scene.add(beamMesh);
+
+// Anneau de sélection
+const ring = new THREE.Mesh(
+  new THREE.SphereGeometry(0.35, 12, 8),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true })
+);
+ring.visible = false;
+scene.add(ring);
+
+// --- Modèles d'appareils (nez dans la direction +z) ---
+function makeAircraft(shape, color) {
+  const g = new THREE.Group();
+  const m = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.2 });
+  const add = (geo, pos, rot) => {
+    const me = new THREE.Mesh(geo, m);
+    me.position.set(...pos);
+    if (rot) me.rotation.set(...rot);
+    g.add(me);
+    return me;
+  };
+  const along = [Math.PI / 2, 0, 0];
+  switch (shape) {
+    case 'fighter':
+      add(new THREE.CylinderGeometry(0.03, 0.015, 1.2, 8), [0, 0, 0], along);
+      add(new THREE.BoxGeometry(1, 0.02, 0.4), [0, 0, -0.1]);
+      break;
+    case 'airliner':
+      add(new THREE.CylinderGeometry(0.05, 0.05, 1.6, 12), [0, 0, 0], along);
+      add(new THREE.BoxGeometry(1.6, 0.02, 0.25), [0, 0, 0.05]);
+      add(new THREE.BoxGeometry(0.02, 0.25, 0.2), [0, 0.12, -0.75]);
+      break;
+    case 'cargo':
+      add(new THREE.CylinderGeometry(0.07, 0.07, 1.4, 12), [0, 0, 0], along);
+      add(new THREE.BoxGeometry(1.9, 0.03, 0.3), [0, 0, 0.05]);
+      break;
+    case 'light':
+      add(new THREE.CylinderGeometry(0.03, 0.03, 0.8, 8), [0, 0, 0], along);
+      add(new THREE.BoxGeometry(1, 0.02, 0.18), [0, 0.03, 0.1]);
+      break;
+    case 'glider':
+      add(new THREE.CylinderGeometry(0.018, 0.018, 1.2, 8), [0, 0, 0], along);
+      add(new THREE.BoxGeometry(1.7, 0.012, 0.12), [0, 0.015, 0.1]);
+      add(new THREE.BoxGeometry(0.5, 0.012, 0.08), [0, 0.08, -0.52]);
+      break;
+    case 'fixedwing':
+      add(new THREE.CylinderGeometry(0.02, 0.02, 0.85, 8), [0, 0, 0], along);
+      add(new THREE.BoxGeometry(0.85, 0.02, 0.14), [0, 0, 0.02]);
+      add(new THREE.BoxGeometry(0.26, 0.015, 0.08), [0, 0.04, -0.36]);
+      break;
+    case 'balloon':
+      add(new THREE.SphereGeometry(0.32, 14, 10), [0, 0.18, 0]);
+      add(new THREE.CylinderGeometry(0.008, 0.008, 0.18, 5), [0, -0.12, 0]);
+      add(new THREE.BoxGeometry(0.08, 0.07, 0.08), [0, -0.25, 0]);
+      break;
+    case 'wing':
+      add(new THREE.ConeGeometry(0.45, 0.3, 4), [0, 0.08, 0], [0, 0, Math.PI / 2]);
+      add(new THREE.SphereGeometry(0.045, 8, 6), [0, -0.16, 0]);
+      break;
+    case 'heli': {
+      add(new THREE.SphereGeometry(0.1, 12, 8), [0, 0, 0]);
+      add(new THREE.CylinderGeometry(0.02, 0.02, 0.8, 6), [0, 0.02, -0.5], along);
+      g.userData.rotor = add(new THREE.BoxGeometry(1.4, 0.015, 0.05), [0, 0.12, 0]);
+      break;
+    }
+    case 'drone':
+      add(new THREE.BoxGeometry(0.2, 0.06, 0.2), [0, 0, 0]);
+      add(new THREE.BoxGeometry(0.6, 0.01, 0.04), [0, 0.02, 0], [0, Math.PI / 4, 0]);
+      add(new THREE.BoxGeometry(0.6, 0.01, 0.04), [0, 0.02, 0], [0, -Math.PI / 4, 0]);
+      break;
+    case 'bird': {
+      add(new THREE.SphereGeometry(0.09, 10, 8), [0, 0, 0]);
+      const wings = new THREE.Group();
+      wings.add(new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.025, 0.12), m));
+      wings.position.set(0, 0.015, 0);
+      g.add(wings);
+      g.userData.wings = wings;
+      break;
+    }
+  }
+  return g;
+}
+
+function spawn(profileKey = null) {
+  const k = profileKey && TYPES[profileKey] ? profileKey : chooseAutoProfile();
+  const signature = TYPES[k];
+  const vary = (value, amount) => value * (1 - amount + Math.random() * amount * 2);
+  const radarSigma = Math.max(0.001, vary(signature.sigma, 0.45));
+  const targetSpeed = Math.max(0.05, vary(signature.speed, 0.15));
+  const measuredSize = Math.max(0.05, vary(signature.size, 0.12));
+  const measuredMass = Math.max(0.01, vary(signature.mass, 0.2));
+  const measuredNoise = Math.max(0, signature.noise + (Math.random() - 0.5) * 8);
+  const [altMin, altMax] = signature.altitude;
+  const altitude = altMin + Math.random() * (altMax - altMin);
+  const a = Math.random() * Math.PI * 2, r = 76 + Math.random() * 24;
+  const start = new THREE.Vector3(r * Math.cos(a), altitude / 100, r * Math.sin(a));
+  const goalAlt = Math.max(altMin, Math.min(altMax, altitude + (Math.random() - 0.5) * 1200));
+  const turn = (Math.random() < 0.5 ? -1 : 1) * (Math.PI * (0.45 + Math.random() * 0.4));
+  const endAngle = a + turn, endRadius = 76 + Math.random() * 34;
+  const goal = new THREE.Vector3(endRadius * Math.cos(endAngle), goalAlt / 100, endRadius * Math.sin(endAngle));
+  const vel = goal.clone().sub(start).normalize().multiplyScalar(targetSpeed);
+  const mesh = makeAircraft(signature.shape, signature.color);
+  const id = nextId++;
+  mesh.userData.tid = id;
+  scene.add(mesh);
+
+  // Chemin d'onde : ligne radar -> appareil, et paquet qui fait l'aller-retour
+  const lineGeo = new THREE.BufferGeometry().setFromPoints([RADAR.clone(), start.clone()]);
+  const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0x9affc4, transparent: true, opacity: 0.3 }));
+  const pulse = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), new THREE.MeshBasicMaterial({ color: 0xb8ffd0 }));
+  scene.add(line, pulse);
+
+  // Mesures synthétiques venant de capteurs auxiliaires ; les agents ne reçoivent pas k.
+  const sensorReadings = {
+    length: measuredSize, mass: measuredMass, noise: measuredNoise,
+    contour: signature.contour, color: `#${signature.color.toString(16).padStart(6, '0')}`,
+    engines: signature.engines
+  };
+  targets.push({ id, k, pos: start, vel, mesh, line, pulse, dwell: 0, sensorReadings, radarSigma });
+}
+
+function removeTarget(t) {
+  scene.remove(t.mesh, t.line, t.pulse);
+  t.line.geometry.dispose();
+  t.pulse.geometry.dispose();
+  if (t.id === selectedId) selectedId = null;
+}
+
+// Direction du faisceau : azimut qui balaie et élévation synthétique de 0 à 65°
+function beamDir() {
+  const el = (32.5 + 32.5 * Math.sin(beamAz * 3)) * Math.PI / 180;
+  return new THREE.Vector3(Math.sin(beamAz) * Math.cos(el), Math.sin(el), Math.cos(beamAz) * Math.cos(el));
+}
+
+// Seul le calcul Pd décide d'une détection ; k ne sert ici qu'à produire l'écho simulé.
+function detect(t, s) {
+  stats.det++;
+  if (t.lastAgentRun === undefined || simT - t.lastAgentRun >= 90) {
+    t.lastAgentRun = simT;
+    analyzeTrack(t, s);
+  }
+  const Rkm = Number.isFinite(t.lastRangeKm) ? t.lastRangeKm : t.pos.distanceTo(RADAR) / 10;
+  plots.unshift({ t: simT, R: Rkm, est: estSigma(s, Rkm) });
+  if (plots.length > 10) plots.pop();
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), new THREE.MeshBasicMaterial({ color: 0x7dffb0, transparent: true, opacity: 1 }));
+  m.position.copy(t.pos);
+  scene.add(m);
+  markers.push({ mesh: m, t0: simT });
+}
+
+function step(dt) {
+  simT += dt;
+  beamAz = (beamAz + SCAN * dt) % (Math.PI * 2);
+  const D = beamDir();
+  beamMesh.position.copy(RADAR).addScaledVector(D, BEAM_LEN / 2);
+  beamMesh.quaternion.setFromUnitVectors(UP, D.clone().negate());
+  // Le panneau AESA tourne pour faire face au faisceau. lookAt garde l'axe horizontal
+  // stable (pas de roulis autour de la normale, contrairement à setFromUnitVectors).
+  aesaPivot.lookAt(aesaPivot.position.clone().add(D));
+
+  for (const t of targets) {
+    t.pos.addScaledVector(t.vel, dt);
+    t.mesh.position.copy(t.pos);
+    t.mesh.lookAt(t.pos.clone().add(t.vel));
+    if (t.mesh.userData.rotor) t.mesh.userData.rotor.rotation.y += 30 * dt;
+    if (t.mesh.userData.wings) t.mesh.userData.wings.rotation.z = Math.sin(simT * 12 + t.id) * 0.45;
+  }
+
+  for (const t of targets.filter(t => t.pos.distanceTo(RADAR) > 220)) removeTarget(t);
+  targets = targets.filter(t => t.pos.distanceTo(RADAR) <= 220);
+  if (targets.length < NTGT && simT >= nextSpawnAt) {
+    spawn();
+    nextSpawnAt = simT + 1.5 + Math.random() * 2.5;
+  }
+
+  for (const t of targets) {
+    const u = t.pos.clone().sub(RADAR).normalize();
+    const angle = Math.acos(Math.min(1, Math.max(-1, D.dot(u))));
+    if (angle < BEAM_HALF) {
+      t.dwell += dt;
+      if (t.dwell >= DWELL) {
+        t.dwell = 0;
+        stats.dwells++;
+        const Rkm = t.pos.distanceTo(RADAR) / 10;
+        const s = snr(t.radarSigma, Rkm) + (Math.random() - 0.5) * 4;
+        t.lastSnrDb = s;
+        t.lastRangeKm = Rkm;
+        if (Math.random() < pd(s)) detect(t, s);
+      }
+    } else {
+      t.dwell = 0;
+    }
+  }
+}
+
+function updateVisuals() {
+  for (const t of targets) {
+    const pos = t.line.geometry.attributes.position;
+    pos.setXYZ(0, RADAR.x, RADAR.y, RADAR.z);
+    pos.setXYZ(1, t.pos.x, t.pos.y, t.pos.z);
+    pos.needsUpdate = true;
+    t.line.visible = showWaves;
+    t.pulse.visible = showWaves;
+    // Aller-retour : aller pendant la première moitié, retour pendant la seconde
+    const phase = (simT * 0.5 + t.id * 0.37) % 1;
+    const f = phase < 0.5 ? phase * 2 : (phase - 0.5) * 2;
+    const from = phase < 0.5 ? RADAR : t.pos;
+    const to = phase < 0.5 ? t.pos : RADAR;
+    t.pulse.position.lerpVectors(from, to, f);
+  }
+  if (selectedId !== null) {
+    const t = targets.find(t => t.id === selectedId);
+    ring.visible = !!t;
+    if (t) ring.position.copy(t.pos);
+  } else {
+    ring.visible = false;
+  }
+  for (const m of markers) m.mesh.material.opacity = Math.max(0, 1 - (simT - m.t0) / 5);
+  markers = markers.filter(m => {
+    if (simT - m.t0 >= 5) { scene.remove(m.mesh); m.mesh.geometry.dispose(); return false; }
+    return true;
+  });
+}
+
+
+// --- Agents pédagogiques : quatre expertises, puis synthèse du Master ---
+const AGENT_NAMES = [
+  ['master', 'Master · coordination'],
+  ['military', 'Agent militaire · lecture générale'],
+  ['commercial', 'Agent aviation civile'],
+  ['avian', 'Agent aviaire'],
+  ['anti', 'Agent anti-drone · détection générique']
+];
+const agentViews = Object.fromEntries(AGENT_NAMES.map(([id]) => [id, 'En attente d’une piste détectée.']));
+let localAI = false;
+let analysisBusy = false;
+let queuedAnalysis = null;
+// Appels IA relayés par le serveur sur le même domaine (voir serveur_radar.js)
+const OLLAMA = '/ollama';
+const MODEL = 'qwen3.5:4b';
+const CONFERENCE_FEED = 'radar-ville-live-agent-feed-v1';
+let lastAgentFindings = null;
+const clean = x => String(x).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const CSV_DB = 'radar-ville-agent-log';
+const CSV_STORE = 'analyses';
+const CSV_COLUMNS = [
+  ['date_utc','date_utc'],['piste','piste'],['range_km','distance_km'],['snr_db','snr_db'],
+  ['probabilite_detection_pct','probabilite_detection_pct'],['sigma_est_m2','sigma_estimee_m2'],['echo','classe_echo'],
+  ['size_m_estimate','taille_estimee_m'],['mass_kg_estimate','masse_estimee_kg'],['speed_ms','vitesse_m_s'],
+  ['altitude_m','altitude_m'],['sound_db_simulated','bruit_simule_db'],['simulated_engines','moteurs_estimes'],
+  ['contour_simulated','contour_simule'],['color_simulated','couleur_simulee'],
+  ['agent_militaire','agent_militaire'],['agent_commercial','agent_commercial'],['agent_aviaire','agent_aviaire'],
+  ['agent_anti_drone','agent_anti_drone'],['master_ia','master_ia'],['master_calcul','master_calcul']
+];
+let agentLogDb;
+function openAgentLog() {
+  if (!agentLogDb) agentLogDb = new Promise((resolve, reject) => {
+    const request = indexedDB.open(CSV_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(CSV_STORE)) request.result.createObjectStore(CSV_STORE, {keyPath:'id', autoIncrement:true});
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return agentLogDb;
+}
+async function agentLogCount() {
+  const db = await openAgentLog();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(CSV_STORE, 'readonly').objectStore(CSV_STORE).count();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function updateCsvStatus() {
+  try { document.getElementById('csvStatus').textContent = `Stockage local actif · ${await agentLogCount()} analyses`; }
+  catch { document.getElementById('csvStatus').textContent = 'Stockage local indisponible dans ce navigateur.'; }
+}
+async function saveAgentAnalysis(trackId, obs, reports, masterAi = '') {
+  const row = {
+    date_utc: new Date().toISOString(), piste: trackId,
+    range_km: obs.range_km, snr_db: obs.snr_db,
+    probabilite_detection_pct: +(pd(obs.snr_db) * 100).toFixed(1),
+    sigma_est_m2: obs.sigma_est_m2, echo: obs.echo,
+    size_m_estimate: obs.size_m_estimate, mass_kg_estimate: obs.mass_kg_estimate,
+    speed_ms: obs.speed_ms, altitude_m: obs.altitude_m,
+    sound_db_simulated: obs.sound_db_simulated, simulated_engines: obs.simulated_engines,
+    contour_simulated: obs.contour_simulated, color_simulated: obs.color_simulated,
+    agent_militaire: reports.military, agent_commercial: reports.commercial,
+    agent_aviaire: reports.avian, agent_anti_drone: reports.anti,
+    master_ia: masterAi, master_calcul: reports.master
+  };
+  try {
+    const db = await openAgentLog();
+    const id = await new Promise((resolve, reject) => {
+      const tx = db.transaction(CSV_STORE, 'readwrite');
+      const request = tx.objectStore(CSV_STORE).add(row);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    updateCsvStatus();
+    return id;
+  } catch {
+    document.getElementById('csvStatus').textContent = 'Échec de sauvegarde locale; vérifie les réglages du navigateur.';
+    return null;
+  }
+}
+async function updateAgentAnalysis(id, masterAi) {
+  if (id == null) return;
+  try {
+    const db = await openAgentLog();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(CSV_STORE, 'readwrite'), store = tx.objectStore(CSV_STORE);
+      const request = store.get(id);
+      request.onsuccess = () => { if (request.result) store.put({...request.result, master_ia:masterAi}); };
+      request.onerror = () => reject(request.error);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch { document.getElementById('csvStatus').textContent = 'Une synthèse du Master n’a pas pu être ajoutée au journal.'; }
+}
+async function exportAgentCsv() {
+  try {
+    const db = await openAgentLog();
+    const rows = await new Promise((resolve, reject) => {
+      const request = db.transaction(CSV_STORE, 'readonly').objectStore(CSV_STORE).getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    if (!rows.length) { document.getElementById('csvStatus').textContent = 'Aucune analyse enregistrée pour le moment.'; return; }
+    const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const csv = '\uFEFF' + [CSV_COLUMNS.map(([,label]) => label), ...rows.map(row => CSV_COLUMNS.map(([key]) => row[key]))]
+      .map(line => line.map(cell).join(';')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8'}));
+    const link = document.createElement('a');
+    link.href = url; link.download = `analyses_agents_radar_${new Date().toISOString().slice(0,10)}.csv`;
+    link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    document.getElementById('csvStatus').textContent = `CSV téléchargé · ${rows.length} analyses`;
+  } catch { document.getElementById('csvStatus').textContent = 'Impossible de lire le journal local pour créer le CSV.'; }
+}
+document.getElementById('exportCsv').onclick = exportAgentCsv;
+updateCsvStatus();
+function renderAgents(trackId = null, obs = null) {
+  const root = document.getElementById('agentReports');
+  const measurements = document.getElementById('agentMeasurements');
+  measurements.innerHTML = obs ? `<div class="agent"><b>Piste ${trackId} · données reçues par les agents</b><br>Radar : ${obs.range_km} km · SNR ${obs.snr_db} dB · σ estimée ${obs.sigma_est_m2} m² (${clean(obs.echo)})<br>Capteurs simulés : taille ~${obs.size_m_estimate} m · masse estimée ~${obs.mass_kg_estimate} kg · vitesse ${obs.speed_ms} m/s · altitude ${obs.altitude_m} m<br>Bruit ${obs.sound_db_simulated} dB · moteurs estimés ${obs.simulated_engines} · contour : ${clean(obs.contour_simulated)} · couleur ${clean(obs.color_simulated)}<br>La nation et le mode de pilotage ne sont pas déductibles de ces données.</div>` : '';
+  root.innerHTML = AGENT_NAMES.map(([id, name]) => `<div class="agent"><b>${name}</b><br>${id === 'master' && trackId ? `Piste ${trackId} · ` : ''}${clean(agentViews[id]).replace(/\n/g,'<br>')}</div>`).join('');
+  if (trackId !== null && obs) {
+    try {
+      localStorage.setItem(CONFERENCE_FEED, JSON.stringify({
+        updatedAt: new Date().toISOString(), trackId, obs,
+        agents: Object.fromEntries(AGENT_NAMES.map(([id, name]) => [id, {name, report: agentViews[id]}])),
+        findings: lastAgentFindings
+      }));
+    } catch {}
+  }
+}
+function observe(t, snrDb) {
+  const jitter = (scale) => (Math.random() - 0.5) * scale;
+  const Rkm = Number.isFinite(t.lastRangeKm) ? t.lastRangeKm : t.pos.distanceTo(RADAR) / 10;
+  const sigmaEstimate = estSigma(snrDb, Rkm);
+  const sensor = t.sensorReadings;
+  return {
+    range_km: +Rkm.toFixed(2),
+    snr_db: +snrDb.toFixed(1),
+    sigma_est_m2: +sigmaEstimate.toFixed(2),
+    echo: cls(sigmaEstimate),
+    speed_ms: Math.round(t.vel.length() * 100),
+    altitude_m: Math.round(t.pos.y * 100),
+    size_m_estimate: +(sensor.length * (1 + jitter(0.2))).toFixed(1),
+    mass_kg_estimate: Math.max(0, Math.round(sensor.mass * (1 + jitter(0.3)))),
+    sound_db_simulated: Math.round(sensor.noise + jitter(6)),
+    simulated_engines: sensor.engines,
+    contour_simulated: sensor.contour,
+    color_simulated: sensor.color
+  };
+}
+function heuristicReports(o) {
+  const avian = o.size_m_estimate < 1.2 && o.speed_ms < 45 && o.contour_simulated.includes('battements');
+  const small = o.size_m_estimate < 2 && !avian;
+  const commercial = o.size_m_estimate > 28 && o.speed_ms > 120 && o.simulated_engines >= 2 && o.contour_simulated.includes('ailes en flèche');
+  const fastCompact = o.size_m_estimate >= 8 && o.size_m_estimate <= 20 && o.speed_ms > 100 && o.sigma_est_m2 >= 0.5 && o.sigma_est_m2 <= 20;
+  const largeAircraft = o.size_m_estimate > 25 && o.sigma_est_m2 > 8;
+  const aircraft = (fastCompact || largeAircraft || (o.size_m_estimate >= 5 && o.speed_ms > 35)) && !commercial;
+  const reports = {
+    military: fastCompact ? `Profil compatible avec un aéronef militaire compact et rapide · σ estimée ${o.sigma_est_m2} m² · ${o.speed_ms} m/s · altitude ${o.altitude_m} m · contour ${o.contour_simulated}. Confiance limitée ; rôle précis, nation et identité inconnus.` : largeAircraft ? `Écho compatible avec un grand aéronef · σ estimée ${o.sigma_est_m2} m² · ${o.size_m_estimate} m · ${o.speed_ms} m/s · altitude ${o.altitude_m} m. Rôle, nation et identité indéterminés.` : aircraft ? `Profil d’aéronef possible · σ estimée ${o.sigma_est_m2} m² · ${o.size_m_estimate} m · ${o.speed_ms} m/s. Les mesures ne suffisent pas à confirmer un profil militaire.` : 'Mesures insuffisantes pour proposer un profil d’aéronef militaire.',
+    commercial: commercial ? `Profil de grand aéronef civil possible · ${o.simulated_engines} moteurs (hypothèse simulée) · ${o.size_m_estimate} m · ${o.speed_ms} m/s. Airbus/Boeing et modèle non déduits.` : 'Profil civil commercial non confirmé par les mesures présentes.',
+    avian: avian ? `Type probable : oiseau à ailes battantes · taille ~${o.size_m_estimate} m · masse ~${o.mass_kg_estimate} kg · bruit ${o.sound_db_simulated} dB simulés.` : 'Profil aviaire peu probable selon taille, vitesse et contour simulé.',
+    anti: small ? `Petit objet aérien détecté · taille ~${o.size_m_estimate} m · masse ~${o.mass_kg_estimate} kg · ${o.speed_ms} m/s · bruit simulé ${o.sound_db_simulated} dB. Type et pilotage inconnus.` : 'Aucun petit aéronef clairement indiqué par les mesures.'
+  };
+  const votes = [
+    ['militaire', fastCompact || (aircraft && !commercial)],
+    ['commercial', commercial],
+    ['aviaire', avian],
+    ['anti-drone', small]
+  ].filter(([, supports]) => supports).map(([name]) => name);
+  reports.findings = {
+    military: fastCompact || (aircraft && !commercial) ? 'aeronef' : null,
+    commercial: commercial ? 'aeronef' : null,
+    avian: avian ? 'aviaire' : null,
+    anti: small ? 'petit_objet' : null
+  };
+  const agreement = votes.length >= 3
+    ? `Convergence de ${votes.length}/4 agents (${votes.join(', ')}).`
+    : votes.length > 0
+      ? `Avis partagés : ${votes.join(', ')} ressortent, les autres agents ne confirment pas cette piste.`
+      : 'Aucun des quatre agents spécialisés ne propose de catégorie avec assez d’indices.';
+  const confidence = o.snr_db >= thr + 8 && votes.length >= 3 ? 'moyenne' : 'faible';
+  const category = votes.length ? `Catégorie provisoire : ${votes.join(' / ')}.` : 'Catégorie provisoire : indéterminée.';
+  reports.master = `Contre-rendu du Master — écho détecté à ${o.range_km} km (SNR ${o.snr_db} dB ; probabilité de détection calculée ${(pd(o.snr_db) * 100).toFixed(0)} %). ${category} ${agreement} σ estimée ${o.sigma_est_m2} m² ; taille ~${o.size_m_estimate} m ; vitesse ${o.speed_ms} m/s ; altitude ${o.altitude_m} m. Confiance ${confidence}. Ces mesures simulées ne permettent pas d’établir une identité, une nation ou une intention.`;
+  return reports;
+}
+async function askLocalMaster(obs, expertReports) {
+  const prompt = `Tu es le Master d’une simulation pédagogique fictive. Mesures radar et capteurs simulés : ${JSON.stringify(obs)}. Avis des quatre agents : ${JSON.stringify(expertReports)}. Écris un contre-rendu en français de deux phrases maximum : rapproche les avis, signale tout désaccord, cite un indice mesuré et reste prudent. N’invente pas d’identité précise, de nationalité ni d’intention.`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90000);
+  try {
+    const r = await fetch(`${OLLAMA}/api/chat`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
+      body:JSON.stringify({model:MODEL,stream:false,think:false,options:{temperature:0.1,num_predict:120},messages:[
+        {role:'system',content:'Tu résumes uniquement les avis et mesures fournis. N’ajoute aucun fait, nombre, identité, pays, danger ou consigne. Si les agents ne sont pas d’accord, dis que le classement reste incertain.'},
+        {role:'user',content:prompt}
+      ]})
+    });
+    if (!r.ok) throw new Error(`Ollama ${r.status}`);
+    const data = await r.json();
+    return data.message?.content?.trim() || 'Aucune synthèse reçue du modèle local.';
+  } finally { clearTimeout(timeout); }
+}
+async function analyzeTrack(t, snrDb) {
+  const obs = observe(t, snrDb);
+  const fallback = heuristicReports(obs);
+  lastAgentFindings = fallback.findings;
+  if (!localAI) {
+    Object.assign(agentViews, fallback);
+    renderAgents(t.id, obs);
+    saveAgentAnalysis(t.id, obs, fallback);
+    return;
+  }
+  if (analysisBusy) { queuedAnalysis = { track: t, snrDb }; return; }
+  analysisBusy = true;
+  Object.assign(agentViews, fallback, {master:'Le Master IA rassemble les avis… (les quatre agents spécialisés affichent déjà leur analyse)'});
+  renderAgents(t.id, obs);
+  const savedRecord = saveAgentAnalysis(t.id, obs, fallback, 'En cours');
+  try {
+    const aiSummary = await askLocalMaster(obs, {
+      militaire: fallback.military, commercial: fallback.commercial,
+      aviaire: fallback.avian, antiDrone: fallback.anti
+    });
+    agentViews.master = `${aiSummary}\n\n${fallback.master}`;
+    updateAgentAnalysis(await savedRecord, aiSummary);
+  } catch (err) {
+    localAI = false;
+    document.getElementById('aiStatus').textContent = location.protocol === 'file:'
+      ? 'IA locale non connectée · ouvre les étapes ci-dessus : une page file:// ne peut pas appeler Ollama.'
+      : `Le modèle local n’a pas répondu à temps · ${MODEL}. Les quatre agents de mesures et le contre-rendu radar restent actifs.`;
+    Object.assign(agentViews, fallback);
+    updateAgentAnalysis(await savedRecord, 'Indisponible · contre-rendu calculé utilisé');
+  } finally {
+    analysisBusy = false;
+  }
+  renderAgents(t.id, obs);
+  const next = queuedAnalysis;
+  queuedAnalysis = null;
+  if (next && targets.some(target => target.id === next.track.id)) analyzeTrack(next.track, next.snrDb);
+}
+async function checkLocalAI() {
+  const status = document.getElementById('aiStatus');
+  status.textContent = 'Recherche du modèle local…';
+  try {
+    const r = await fetch(`${OLLAMA}/api/tags`);
+    if (!r.ok) throw new Error('Serveur local absent');
+    const data = await r.json();
+    const found = (data.models || []).some(m => m.name === MODEL || m.name.startsWith(`${MODEL.split(':')[0]}:`));
+    if (!found) throw new Error(`Modèle ${MODEL} absent`);
+    localAI = true;
+    status.textContent = `Ollama prêt · ${MODEL} · test de génération au premier écho`;
+  } catch {
+    localAI = false;
+    status.textContent = location.protocol === 'file:'
+      ? 'IA locale non connectée · ouvre les étapes ci-dessus : une page file:// ne peut pas appeler Ollama.'
+      : `IA locale inaccessible sur ${OLLAMA} · vérifie qu’Ollama est lancé et que le modèle ${MODEL} est installé; les agents pédagogiques restent actifs.`;
+  }
+}
+document.getElementById('connectAI').onclick = checkLocalAI;
+renderAgents();
+checkLocalAI();
+
+// --- Panneaux ---
+function renderPanel() {
+  document.getElementById('stats').innerHTML =
+    `Passages du faisceau sur une cible : ${stats.dwells}<br>` +
+    `Détections : ${stats.det}<br>` +
+    `Appareils suivis : ${targets.length} · ${Object.keys(TYPES).length} profils disponibles<br>` +
+    `Temps simulé : ${simT.toFixed(0)} s`;
+  document.getElementById('plots').innerHTML = plots.length
+    ? plots.map(p => `${p.t.toFixed(1)} s · ${p.R.toFixed(1)} km · ${cls(p.est)}`).join('<br>')
+    : 'Aucun écho pour l\'instant.';
+  renderFormula();
+}
+
+function renderFormula() {
+  const box = document.getElementById('formula');
+  const t = targets.find(t => t.id === selectedId);
+  if (!t) { box.innerHTML = 'Clique sur un appareil dans la scène.'; return; }
+  const hasEcho = Number.isFinite(t.lastSnrDb);
+  const Rkm = hasEcho && Number.isFinite(t.lastRangeKm) ? t.lastRangeKm : t.pos.distanceTo(RADAR) / 10;
+  const s = t.lastSnrDb;
+  const sigmaEstimate = hasEcho ? estSigma(s, Rkm) : null;
+  const p = hasEcho ? pd(s) : null;
+  const v = t.vel.length() * 100;
+  box.innerHTML =
+    `<b>${showNames ? TYPES[t.k].nom : 'Écho inconnu'}</b><br>` +
+    `Distance R = ${Rkm.toFixed(2)} km<br>` +
+    `Vitesse = ${v.toFixed(0)} m/s<br>` +
+    (hasEcho ? `σ estimée à partir de l’écho = ${sigmaEstimate.toFixed(2)} m²<br>` : 'En attente du passage dans le faisceau radar.<br>') +
+    (showNames ? `σ réelle de la cible simulée (vérité terrain) = ${t.radarSigma.toFixed(2)} m²<br>` : '') +
+    `<br><b>Équation radar</b><br>` +
+    `Pr = (Pt · G² · λ² · σ) / ((4π)³ · R⁴)<br>` +
+    `donc Pr ∝ σ / R⁴<br><br>` +
+    `<b>Rapport signal / bruit</b><br>` +
+    `SNR = ${C0} + 10·log10(σ) − 40·log10(R / 10 km)<br>` +
+    (hasEcho ? `SNR mesuré = ${s.toFixed(1)} dB<br><br>` : 'SNR : pas encore mesuré<br><br>') +
+    `<b>Probabilité de détection</b><br>` +
+    `Pd ≈ 1 / (1 + e^(−(SNR − seuil) / 1.5))<br>` +
+    (hasEcho ? `seuil = ${thr} dB → Pd ≈ ${(p * 100).toFixed(0)} %` : `seuil = ${thr} dB → calcul après mesure`);
+}
+
+// Calcul live pour la cible sélectionnée, mis à jour à chaque frame
+function renderLive() {
+  const el = document.getElementById('live');
+  const t = targets.find(t => t.id === selectedId);
+  if (!t) { el.innerHTML = 'Clique sur un appareil pour voir le calcul.'; return; }
+  if (!Number.isFinite(t.lastSnrDb)) { el.innerHTML = 'En attente du balayage radar sur cette piste.'; return; }
+  const Rkm = Number.isFinite(t.lastRangeKm) ? t.lastRangeKm : t.pos.distanceTo(RADAR) / 10;
+  const s = t.lastSnrDb;
+  const sig = estSigma(s, Rkm);
+  const p = pd(s);
+  el.innerHTML =
+    `R = ${Rkm.toFixed(3)} km<br>` +
+    `σ estimée = ${sig.toFixed(2)} m²<br>` +
+    `Pr ∝ σ / R⁴ = ${(sig / Math.pow(Rkm / 10, 4)).toExponential(2)}<br>` +
+    `SNR mesuré = <b>${s.toFixed(2)} dB</b><br>` +
+    `Pd = 1 / (1 + e^(−(${s.toFixed(1)} − ${thr}) / 1.5))<br>` +
+    `    = <b>${(p * 100).toFixed(1)} %</b>`;
+}
+
+// --- Contrôles ---
+document.getElementById('pause').onclick = e => {
+  paused = !paused;
+  e.target.textContent = paused ? 'Reprendre' : 'Pause';
+};
+document.getElementById('speed').onchange = e => timeScale = +e.target.value;
+document.getElementById('noise').oninput = e => {
+  thr = 12 + +e.target.value;
+  document.getElementById('nv').textContent = e.target.value;
+};
+document.getElementById('waves').onchange = e => showWaves = e.target.checked;
+document.getElementById('names').onchange = e => { showNames = e.target.checked; renderFormula(); };
+document.getElementById('add').onclick = () => spawn(profileMenu.value || null);
+
+// Sélection au clic
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+renderer.domElement.addEventListener('click', e => {
+  const r = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+  pointer.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(targets.map(t => t.mesh), true);
+  let id = null;
+  if (hits.length) {
+    let o = hits[0].object;
+    while (o && o.userData.tid === undefined) o = o.parent;
+    if (o) id = o.userData.tid;
+  }
+  selectedId = id;
+  renderFormula();
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// --- Boucle ---
+for (let i = 0; i < 14; i++) spawn();
+let last = performance.now(), frameN = 0;
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (!paused) step(dt * timeScale);
+  updateVisuals();
+  renderLive();
+  controls.update();
+  renderer.render(scene, camera);
+  if (++frameN % 10 === 0) renderPanel();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

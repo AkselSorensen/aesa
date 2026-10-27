@@ -5,7 +5,7 @@
   "description": "Simulation radar AESA pédagogique (fictive)",
   "main": "serveur_simulation.js",
   "scripts": {
-    "start": "node serveur_simulation.js"
+    "start": "node serveur_radar.js"
   },
   "engines": {
     "node": ">=18"

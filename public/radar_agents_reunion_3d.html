@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Salle de réunion des agents radar</title>
+<style>
+  :root{color-scheme:dark;--mint:#9fffc2;--line:#2d7554;--panel:rgba(5,19,14,.84)}
+  *{box-sizing:border-box}
+  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07100e;color:#d9f4e3;font-family:Inter,Segoe UI,Arial,sans-serif}
+  #scene{position:fixed;inset:0}
+  #scene canvas{display:block;width:100%;height:100%}
+  .glass{position:fixed;background:var(--panel);border:1px solid rgba(137,232,178,.28);box-shadow:0 16px 42px rgba(0,0,0,.3);backdrop-filter:blur(14px);border-radius:16px}
+  #top{left:22px;top:20px;padding:15px 19px;max-width:min(540px,calc(100vw - 44px))}
+  .eyebrow{font-size:10px;letter-spacing:.22em;color:#92d9b0;text-transform:uppercase;font-weight:700}
+  h1{font-size:19px;letter-spacing:.01em;margin:5px 0 8px;color:#f0fff5;font-weight:650}
+  #link{font-size:12px;color:#f6d58d;display:flex;align-items:center;gap:8px}
+  #dot{width:8px;height:8px;border-radius:50%;background:#e6a853;box-shadow:0 0 10px currentColor}
+  #link.live{color:#9fffc2} #link.live #dot{background:#66f1a1}
+  #tip{font-size:11px;color:#9eb6a6;margin:8px 0 0;line-height:1.45}
+  #controls{position:fixed;right:22px;top:20px;display:flex;gap:8px}
+  button{border:1px solid rgba(159,255,194,.35);background:rgba(5,19,14,.84);color:#dff9e8;padding:10px 13px;border-radius:10px;font-size:12px;cursor:pointer;backdrop-filter:blur(12px)}
+  button:hover{background:#163b2b}
+  #legend{position:fixed;left:22px;bottom:20px;padding:12px 15px;font-size:11px;color:#a9c8b5;line-height:1.6}
+  #legend b{color:#e5fff0}
+  #update{position:fixed;right:22px;bottom:20px;padding:10px 14px;font-size:11px;color:#a9c8b5}
+  #update strong{color:#e5fff0}
+  #timeline{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);width:min(820px,calc(100vw - 420px));padding:10px 13px;display:grid;grid-template-columns:auto auto 1fr auto;gap:9px;align-items:center}
+  #historyRange{width:100%;accent-color:#79e8a8}#historyLabel{font-size:11px;color:#b8d7c3;white-space:nowrap}#historyList{grid-column:1/-1;display:flex;gap:6px;overflow:auto;max-height:36px}
+  #historyList button{padding:6px 9px;font-size:10px;white-space:nowrap}#turnIndicator{position:fixed;right:22px;top:72px;padding:10px 14px;font-size:11px;color:#b9d8c5}#turnIndicator strong{color:#9affc2}
+  #comparePanel{position:fixed;right:22px;bottom:105px;width:min(520px,calc(100vw - 44px));padding:13px;display:none}#comparePanel.show{display:block}#comparePanel h2{font-size:13px;margin:0 0 9px;color:#9affc2}#compareSelectors{display:flex;gap:7px}#compareSelectors select{min-width:0;flex:1;background:#10211b;color:#e1f6e8;border:1px solid #35664c;border-radius:8px;padding:8px;font-size:11px}#compareResult{margin-top:9px;font-size:11px;line-height:1.5;color:#cee2d4;max-height:120px;overflow:auto}#compareResult b{color:#f0fff5}
+  .talk{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(370px,45vw);pointer-events:none;text-align:center;padding:12px 16px;color:#effff4;font-size:13px;line-height:1.4;opacity:0;transition:opacity .25s}.talk.show{opacity:1}.talk b{color:#9affc4;display:block;margin-bottom:4px}
+  @media(max-width:850px){#timeline{left:10px;right:10px;bottom:10px;transform:none;width:auto}#legend{display:none}#update{right:10px;bottom:135px}#controls{right:10px;top:auto;bottom:150px}#turnIndicator{right:10px;top:auto;bottom:190px}#comparePanel{right:10px;bottom:235px}#top{left:10px;top:10px;padding:11px 13px;max-width:60vw}h1{font-size:16px}}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<div id="scene"></div>
+<section id="top" class="glass">
+  <div class="eyebrow">Centre de coordination · simulation</div>
+  <h1>Réunion des agents radar</h1>
+  <div id="link"><span id="dot"></span><span id="linkText">En attente du radar…</span></div>
+  <p id="tip">Garde la page radar ouverte dans un autre onglet. Les dernières mesures et les avis y seront transmis automatiquement.</p>
+</section>
+<div id="controls"><button id="compareToggle">Comparer deux pistes</button><button id="reset">Recentrer la salle</button></div>
+<section id="turnIndicator" class="glass">Tour de parole · <strong id="turnName">en attente</strong></section>
+<section id="legend" class="glass"><b>Vue 3D</b><br>Glisse pour tourner · molette pour zoomer<br>Les couleurs montrent les avis compatibles.</section>
+<section id="update" class="glass">Piste : <strong id="track">—</strong> · Reçu : <strong id="age">—</strong></section>
+<section id="timeline" class="glass"><button id="pauseLive">⏸ Pause</button><button id="prevTrack">◀</button><input id="historyRange" type="range" min="0" max="0" value="0" aria-label="Chronologie des pistes"><button id="nextTrack">▶</button><span id="historyLabel">Historique en chargement…</span><div id="historyList"></div></section>
+<section id="comparePanel" class="glass"><h2>COMPARAISON DES ANALYSES</h2><div id="compareSelectors"><select id="compareA" aria-label="Première analyse"></select><select id="compareB" aria-label="Deuxième analyse"></select></div><div id="compareResult">Choisis deux pistes dans l’historique.</div></section>
+<section id="speech" class="glass talk"><b id="speakerName">AGENT</b><span id="speakerText"></span></section>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const FEED_KEY = 'radar-ville-live-agent-feed-v1';
+const room = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({antialias:false,powerPreference:'low-power'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.25));
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled = false;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+room.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a1518);
+scene.fog = new THREE.Fog(0x0a1518,32,78);
+const camera = new THREE.PerspectiveCamera(43,innerWidth/innerHeight,.1,140);
+const homeCamera = new THREE.Vector3(14,13,22);
+camera.position.copy(homeCamera);
+const controls = new OrbitControls(camera,renderer.domElement);
+controls.target.set(0,3.3,-1.6); controls.enableDamping = true; controls.maxDistance=44; controls.minDistance=12; controls.update();
+
+scene.add(new THREE.HemisphereLight(0xb8e8ff,0x18231d,2.1));
+const ceiling = new THREE.PointLight(0x8cf3bd,75,42,2); ceiling.position.set(0,10,1); scene.add(ceiling);
+const screenGlow = new THREE.PointLight(0x4bdbab,34,18,2); screenGlow.position.set(0,6,-8.5); scene.add(screenGlow);
+const warm = new THREE.PointLight(0x92b9ff,28,22,2); warm.position.set(-10,5,7); scene.add(warm);
+
+const mat = (color,roughness=.65,metalness=.08,extra={}) => new THREE.MeshStandardMaterial({color,roughness,metalness,...extra});
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(34,30),mat(0x14211f,.82));
+floor.rotation.x=-Math.PI/2; floor.position.y=-.08; floor.receiveShadow=true; scene.add(floor);
+const floorGrid = new THREE.GridHelper(34,34,0x29423b,0x203530); floorGrid.position.y=-.055; floorGrid.material.transparent=true; floorGrid.material.opacity=.4; scene.add(floorGrid);
+const wallMat=mat(0x17262a,.88), sideMat=mat(0x111e21,.9);
+function wall(w,h,x,y,z,material){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,.35),material);m.position.set(x,y,z);m.receiveShadow=true;scene.add(m);return m;}
+wall(34,13,0,6.35,-14.8,wallMat); wall(.35,13,-17,6.35,0,sideMat); wall(.35,13,17,6.35,0,sideMat);
+// Drapeau français sur le mur latéral, en tissu légèrement animé.
+const flagCanvas=document.createElement('canvas');flagCanvas.width=600;flagCanvas.height=400;
+const flagCtx=flagCanvas.getContext('2d');flagCtx.fillStyle='#173a8a';flagCtx.fillRect(0,0,200,400);flagCtx.fillStyle='#f7f7f2';flagCtx.fillRect(200,0,200,400);flagCtx.fillStyle='#e33d4d';flagCtx.fillRect(400,0,200,400);
+const flagTexture=new THREE.CanvasTexture(flagCanvas);flagTexture.colorSpace=THREE.SRGBColorSpace;
+const flagPole=new THREE.Mesh(new THREE.CylinderGeometry(.045,.055,2.55,12),mat(0xcaa95e,.28,.65));flagPole.position.set(-16.62,8.15,1.7);scene.add(flagPole);
+const flagFinial=new THREE.Mesh(new THREE.SphereGeometry(.105,16,12),mat(0xe8c875,.24,.55));flagFinial.position.set(-16.62,9.47,1.7);scene.add(flagFinial);
+const flagGeometry=new THREE.PlaneGeometry(3.25,2.15,16,10),flagMaterial=new THREE.MeshStandardMaterial({map:flagTexture,roughness:.78,side:THREE.DoubleSide});flagGeometry.attributes.position.setUsage(THREE.DynamicDrawUsage);
+const frenchFlag=new THREE.Mesh(flagGeometry,flagMaterial);frenchFlag.rotation.y=Math.PI/2;frenchFlag.position.set(-16.73,8.25,3.36);scene.add(frenchFlag);
+const flagBasePositions=flagGeometry.attributes.position.array.slice();
+// Lames décoratives et bandes lumineuses sur les murs
+for(let i=-7;i<=7;i++){
+  const rib=new THREE.Mesh(new THREE.BoxGeometry(.045,10,.04),mat(0x31534a,.48,.2)); rib.position.set(i*2.15,6.2,-14.58); scene.add(rib);
+}
+const strip=new THREE.Mesh(new THREE.BoxGeometry(18,.045,.06),mat(0x54e3a2,.3,.1,{emissive:0x1a7750,emissiveIntensity:1.5})); strip.position.set(0,10.7,-14.48); scene.add(strip);
+
+// Grand écran de réunion, alimenté par les informations publiées par la page radar.
+const frame=new THREE.Mesh(new THREE.BoxGeometry(16.4,9.2,.48),mat(0x050a0b,.28,.45)); frame.position.set(0,6.05,-14.25); frame.castShadow=true; scene.add(frame);
+const displayCanvas=document.createElement('canvas'); displayCanvas.width=1920; displayCanvas.height=1080;
+const ctx=displayCanvas.getContext('2d');
+const displayTexture=new THREE.CanvasTexture(displayCanvas); displayTexture.colorSpace=THREE.SRGBColorSpace;
+const display=new THREE.Mesh(new THREE.PlaneGeometry(15.95,8.75),new THREE.MeshBasicMaterial({map:displayTexture, toneMapped:false}));
+display.position.set(0,6.05,-13.99); scene.add(display);
+
+function roundRect(c,x,y,w,h,r,fill,stroke){c.beginPath();c.roundRect(x,y,w,h,r);c.fillStyle=fill;c.fill();if(stroke){c.strokeStyle=stroke;c.lineWidth=2;c.stroke();}}
+function wrapLines(c,text,maxWidth,maxLines){
+  const words=String(text||'En attente d’une piste détectée.').split(/\s+/), lines=[];let line='';
+  for(const word of words){const test=line?`${line} ${word}`:word;if(c.measureText(test).width>maxWidth&&line){lines.push(line);line=word;if(lines.length===maxLines)break;}else line=test;}
+  if(line&&lines.length<maxLines)lines.push(line);
+  const consumed=lines.join(' ').length;
+  if(consumed<String(text||'').length&&lines.length)lines[lines.length-1]=lines[lines.length-1].replace(/[.,;:]?$/,'…');
+  return lines;
+}
+const agents=[
+  {id:'military',label:'AGENT MILITAIRE',color:'#ff7a83'},
+  {id:'commercial',label:'AGENT AVIATION CIVILE',color:'#ffd36e'},
+  {id:'avian',label:'AGENT AVIAIRE',color:'#84d7ff'},
+  {id:'anti',label:'AGENT ANTI-DRONE',color:'#d4a0ff'}
+];
+let latestFeed=null;
+let history=[], selectedIndex=-1, liveMode=true, speakerIndex=0;
+const voteColors={aeronef:'#9affc4',aviaire:'#84d7ff',petit_objet:'#d4a0ff'};
+function findingsFor(feed){
+  if(feed?.findings)return feed.findings;
+  const o=feed?.obs||{},avian=o.size_m_estimate<1.2&&o.speed_ms<45&&String(o.contour_simulated||'').includes('battements');
+  const small=o.size_m_estimate<2&&!avian,commercial=o.size_m_estimate>28&&o.speed_ms>120&&o.simulated_engines>=2&&String(o.contour_simulated||'').includes('ailes en flèche');
+  const fast=o.size_m_estimate>=8&&o.size_m_estimate<=20&&o.speed_ms>100&&o.sigma_est_m2>=.5&&o.sigma_est_m2<=20;
+  const large=o.size_m_estimate>25&&o.sigma_est_m2>8,aircraft=(fast||large||(o.size_m_estimate>=5&&o.speed_ms>35))&&!commercial;
+  return {military:fast||aircraft?'aeronef':null,commercial:commercial?'aeronef':null,avian:avian?'aviaire':null,anti:small?'petit_objet':null};
+}
+function consensus(feed){
+  const findings=findingsFor(feed),groups={};for(const a of agents){const vote=findings[a.id];if(vote)(groups[vote]||= []).push(a);}
+  const active=Object.keys(groups), conflict=active.length>1;
+  let explanation='Aucun agent ne relève de catégorie suffisamment étayée : classement indéterminé.';
+  if(conflict) explanation=`Désaccord : ${active.map(k=>`${groups[k].map(a=>a.label.replace('AGENT ','')).join(' + ')} penchent vers « ${k==='aeronef'?'aéronef':k==='aviaire'?'oiseau':'petit objet'} »`).join(' ; ')}. Les mesures ne permettent pas de trancher.`;
+  else if(active.length){const supporters=groups[active[0]],others=4-supporters.length;explanation=supporters.length>1?`Convergence de ${supporters.length} agents sur « ${active[0]==='aeronef'?'aéronef':active[0]==='aviaire'?'oiseau':'petit objet'} » ; ${others} agent(s) ne confirment pas. Confiance à garder prudente.`:`Avis isolé de ${supporters[0].label} ; les autres ne confirment pas. Conclusion indéterminée.`;}
+  return {findings,groups,conflict,explanation};
+}
+function drawDisplay(feed){
+  ctx.fillStyle='#071310';ctx.fillRect(0,0,displayCanvas.width,displayCanvas.height);
+  const bg=ctx.createLinearGradient(0,0,1920,1080);bg.addColorStop(0,'#0b1d19');bg.addColorStop(1,'#07100f');ctx.fillStyle=bg;ctx.fillRect(0,0,1920,1080);
+  ctx.fillStyle='#9affc4';ctx.font='700 30px Segoe UI,Arial';ctx.fillText('BRIEFING RADAR  /  ÉQUIPE DE COORDINATION',56,57);
+  ctx.fillStyle='#719b83';ctx.font='22px Segoe UI,Arial';ctx.textAlign='right';ctx.fillText(feed?new Date(feed.updatedAt).toLocaleTimeString('fr-FR'):'EN ATTENTE DU FLUX',1860,57);ctx.textAlign='left';
+  ctx.strokeStyle='#29463b';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(56,82);ctx.lineTo(1864,82);ctx.stroke();
+  if(!feed){
+    ctx.fillStyle='#e2f5e9';ctx.font='600 38px Segoe UI,Arial';ctx.fillText('Aucune piste transmise pour le moment',70,210);
+    ctx.fillStyle='#91ac9a';ctx.font='28px Segoe UI,Arial';ctx.fillText('Ouvre radar_ville_3d.html dans un autre onglet du même localhost.',70,265);
+    ctx.fillText('Les mesures observées et les avis des agents apparaîtront ici.',70,310);displayTexture.needsUpdate=true;return;
+  }
+  const o=feed.obs||{};
+  const verdict=consensus(feed);
+  roundRect(ctx,56,105,1808,128,18,'#10251e','#294b3b');
+  ctx.fillStyle='#f2fff6';ctx.font='700 25px Segoe UI,Arial';ctx.fillText(`PISTE ${feed.trackId}   ·   ÉCHO ${o.echo||'—'}`,82,148);
+  ctx.fillStyle='#a8cbb5';ctx.font='22px Segoe UI,Arial';
+  ctx.fillText(`Distance ${o.range_km??'—'} km     SNR ${o.snr_db??'—'} dB     σ estimée ${o.sigma_est_m2??'—'} m²     Pd calculée ${o.snr_db==null?'—':(100/(1+Math.exp(-(o.snr_db-12)/1.5))).toFixed(0)+' %'}`,82,194);
+  ctx.fillText(`Taille ~${o.size_m_estimate??'—'} m   ·   masse ~${o.mass_kg_estimate??'—'} kg   ·   vitesse ${o.speed_ms??'—'} m/s   ·   altitude ${o.altitude_m??'—'} m`,82,218);
+  const cols=[56,978], rows=[257,497], cardW=886, cardH=218;
+  agents.forEach((a,i)=>{
+    const x=cols[i%2],y=rows[Math.floor(i/2)],entry=feed.agents?.[a.id];
+    const category=verdict.findings[a.id],agreeColor=category?voteColors[category]:a.color;
+    roundRect(ctx,x,y,cardW,cardH,16,category?'#10251e':'#0e1e19',category?agreeColor:'#29463b');
+    ctx.fillStyle=agreeColor;ctx.font='700 23px Segoe UI,Arial';ctx.fillText(a.label+(category?`  ·  ${category==='aeronef'?'AÉRONEF':category==='aviaire'?'AVIAIRE':'PETIT OBJET'}`:''),x+24,y+39);
+    ctx.fillStyle='#d5e9db';ctx.font='22px Segoe UI,Arial';
+    const lines=wrapLines(ctx,entry?.report||'En attente d’une analyse.',cardW-50,5);
+    lines.forEach((line,j)=>ctx.fillText(line,x+24,y+82+j*33));
+  });
+  roundRect(ctx,56,737,1808,270,18,'#10251e','#397354');
+  ctx.fillStyle='#9affc4';ctx.font='700 24px Segoe UI,Arial';ctx.fillText('MASTER  ·  CONTRE-RENDU',82,779);
+  ctx.fillStyle='#e0f2e6';ctx.font='23px Segoe UI,Arial';
+  const report=feed.agents?.master?.report||'Le Master attend les quatre avis spécialisés.';
+  wrapLines(ctx,report,1700,3).forEach((line,j)=>ctx.fillText(line,82,824+j*32));
+  ctx.fillStyle=verdict.conflict?'#ffb870':'#9affc4';ctx.font='700 20px Segoe UI,Arial';
+  wrapLines(ctx,`LECTURE DU DÉSACCORD · ${verdict.explanation}`,1700,2).forEach((line,j)=>ctx.fillText(line,82,930+j*26));
+  ctx.fillStyle='#769281';ctx.font='16px Segoe UI,Arial';ctx.fillText('Données pédagogiques simulées · le type caché de la cible n’est pas transmis aux agents.',82,1000);
+  displayTexture.needsUpdate=true;
+}
+
+// Table centrale et éclairage intégré
+const tableBase=new THREE.Mesh(new THREE.CylinderGeometry(1.15,1.45,1.05,48),mat(0x1a2d28,.4,.3));tableBase.position.set(0,.75,0);tableBase.castShadow=true;scene.add(tableBase);
+const tabletop=new THREE.Mesh(new THREE.CylinderGeometry(6.15,6.15,.32,96),mat(0x172d27,.26,.32));tabletop.position.set(0,1.35,0);tabletop.castShadow=true;tabletop.receiveShadow=true;scene.add(tabletop);
+const tableEdge=new THREE.Mesh(new THREE.TorusGeometry(6.08,.055,10,100),mat(0x52c98a,.26,.35,{emissive:0x103e29,emissiveIntensity:.8}));tableEdge.rotation.x=Math.PI/2;tableEdge.position.y=1.39;scene.add(tableEdge);
+const centerGlow=new THREE.Mesh(new THREE.CylinderGeometry(2.5,2.5,.03,64),mat(0x102b24,.32,.2,{emissive:0x0c5b3a,emissiveIntensity:.75}));centerGlow.position.set(0,1.53,0);scene.add(centerGlow);
+
+function makeNameSprite(text,color){
+  const c=document.createElement('canvas');c.width=640;c.height=128;const g=c.getContext('2d');
+  g.fillStyle='#07130f';g.strokeStyle=color;g.lineWidth=4;g.beginPath();g.roundRect(8,8,624,112,24);g.fill();g.stroke();
+  g.fillStyle=color;g.font='700 34px Segoe UI,Arial';g.textAlign='center';g.textBaseline='middle';g.fillText(text,320,64);
+  const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;
+  const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false}));sprite.scale.set(4.6,.92,1);return sprite;
+}
+function createSeat(agent,index){
+  const positions=[[-7.2,2.4],[7.2,2.4],[-7.2,-4.1],[7.2,-4.1],[0,8.0]];
+  const [x,z]=positions[index],color=new THREE.Color(agent.color),group=new THREE.Group();
+  const yaw=Math.atan2(-x,-z);group.position.set(x,0,z);group.rotation.y=yaw;scene.add(group);
+  const chair= new THREE.Mesh(new THREE.CylinderGeometry(.72,.82,.32,32),mat(0x20332e,.42,.2));chair.position.y=.75;chair.castShadow=true;group.add(chair);
+  const back=new THREE.Mesh(new THREE.BoxGeometry(1.15,1.45,.18),mat(0x1a302a,.42,.15));back.position.set(0,1.35,-.58);back.castShadow=true;group.add(back);
+  const torso=new THREE.Mesh(new THREE.CapsuleGeometry(.47,.9,5,10),mat(color,.34,.08,{emissive:color,emissiveIntensity:.08}));torso.position.set(0,2.0,.16);torso.castShadow=true;group.add(torso);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(.38,24,18),mat(0xcbd9cf,.35,.03));head.position.set(0,2.86,.28);head.castShadow=true;group.add(head);
+  const visor=new THREE.Mesh(new THREE.BoxGeometry(.5,.12,.16),mat(0x102720,.2,.25,{emissive:color,emissiveIntensity:.55}));visor.position.set(0,2.88,.62);group.add(visor);
+  // Bras articulés pour les gestes de briefing autour de la table.
+  const arms=[];for(const side of [-1,1]){const pivot=new THREE.Group();pivot.position.set(side*.38,2.36,.34);group.add(pivot);const arm=new THREE.Mesh(new THREE.CapsuleGeometry(.105,.48,4,8),mat(color,.42,.05));arm.position.set(side*.12,-.28,.04);arm.rotation.z=side*-.18;arm.castShadow=true;pivot.add(arm);const hand=new THREE.Mesh(new THREE.SphereGeometry(.12,14,10),mat(0xcbd9cf,.35));hand.position.set(side*.2,-.54,.12);pivot.add(hand);arms.push({pivot,side});}
+  const badge=new THREE.Mesh(new THREE.SphereGeometry(.12,16,12),mat(color,.3,.1,{emissive:color,emissiveIntensity:.65}));badge.position.set(0,2.18,.6);group.add(badge);
+  const tag=makeNameSprite(agent.label,agent.color);tag.position.set(0,3.65,.18);group.add(tag);
+  return {group,torso,head,badge,arms,color};
+}
+const seatAgents=[...agents.map(a=>({...a})),{id:'master',label:'MASTER',color:'#9affc4'}];
+const seats=seatAgents.map(createSeat);
+// Carte holographique de situation : anneaux radar, axes et repères de piste sur la table.
+const holoGroup=new THREE.Group();holoGroup.position.set(0,1.555,0);scene.add(holoGroup);
+const holoMat=new THREE.MeshBasicMaterial({color:0x55f0ad,transparent:true,opacity:.30,depthWrite:false});
+for(const radius of [1.45,2.05,2.65]){const ring=new THREE.Mesh(new THREE.TorusGeometry(radius,.018,6,96),holoMat.clone());ring.rotation.x=Math.PI/2;holoGroup.add(ring);}
+for(let i=0;i<8;i++){const a=i*Math.PI/4,line=new THREE.Mesh(new THREE.BoxGeometry(.018,2.7,.018),holoMat.clone());line.rotation.y=a;holoGroup.add(line);}
+const holoSweep=new THREE.Mesh(new THREE.BoxGeometry(.025,.025,5.25),new THREE.MeshBasicMaterial({color:0x9affc4,transparent:true,opacity:.7}));holoSweep.position.y=.025;holoGroup.add(holoSweep);
+const holoPin=new THREE.Mesh(new THREE.SphereGeometry(.11,16,12),new THREE.MeshBasicMaterial({color:0xffcf73,emissive:0x9b5413,emissiveIntensity:1.5}));holoPin.position.set(1.05,.06,-.7);holoGroup.add(holoPin);
+// Maquette urbaine miniature intégrée à la table.
+const cityMap=new THREE.Group();cityMap.position.set(0,1.59,0);scene.add(cityMap);
+const cityBase=new THREE.Mesh(new THREE.CylinderGeometry(5.35,5.35,.055,80),new THREE.MeshStandardMaterial({color:0x10251f,roughness:.82,transparent:true,opacity:.9}));cityBase.position.y=-.015;cityMap.add(cityBase);
+const roadMat=new THREE.MeshBasicMaterial({color:0x79c9a0,transparent:true,opacity:.24});
+for(let i=-2;i<=2;i++){const roadX=new THREE.Mesh(new THREE.BoxGeometry(.11,.025,9.5),roadMat);roadX.position.set(i*1.78,.025,0);cityMap.add(roadX);const roadZ=new THREE.Mesh(new THREE.BoxGeometry(9.5,.025,.11),roadMat);roadZ.position.set(0,.027,i*1.78);cityMap.add(roadZ);}
+const buildingColors=[0x35564b,0x3d514a,0x4b6155,0x304b47,0x5a6554];
+for(let gx=-2;gx<=2;gx++)for(let gz=-2;gz<=2;gz++){const h=.22+((Math.abs(gx*7+gz*11)%5)*.105),w=.76+((gx+gz+8)%3)*.06,d=.72+((gx*2-gz+9)%3)*.06;const building=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshStandardMaterial({color:buildingColors[(gx*gx+gz*3+20)%buildingColors.length],roughness:.68,metalness:.08,emissive:0x10251b,emissiveIntensity:.18}));building.position.set(gx*1.78+.89,h/2+.04,gz*1.78+.89);building.castShadow=true;building.receiveShadow=true;cityMap.add(building);const roof=new THREE.Mesh(new THREE.BoxGeometry(w*.78,.025,d*.78),new THREE.MeshBasicMaterial({color:0x70d89e,transparent:true,opacity:.32}));roof.position.set(building.position.x,h+.055,building.position.z);cityMap.add(roof);}
+const MAP_ROUTES=[[-4.5,0,-3.7,-1.9,.35,4.2,2.2,4,-2.4],[-4.3,0,3.4,-.3,-3.8,3.8,-3.2,4.3,1.8],[4.5,0,3.6,1.2,3.8,-3.5,-3.5,-4.4,-1.8],[4.1,0,-3.9,-2.2,1.5,3.7,3.2,-3.6,4.3]];
+const mapTracks=[],mapTrackColors=[0x9affc4,0xffbd72,0x7ed6ff,0xd4a0ff];
+function makeMapLabel(label,color){const c=document.createElement('canvas');c.width=320;c.height=96;const g=c.getContext('2d');g.fillStyle='#07130f';g.strokeStyle=`#${color.toString(16).padStart(6,'0')}`;g.lineWidth=5;g.beginPath();g.roundRect(5,5,310,86,18);g.fill();g.stroke();g.fillStyle='#f0fff5';g.font='700 35px Segoe UI,Arial';g.textAlign='center';g.textBaseline='middle';g.fillText(label,160,48);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false}));sp.scale.set(1.15,.34,1);return sp;}
+function syncMapTracks(){const newest=[];for(const f of [...history].reverse()){if(!newest.some(x=>String(x.trackId)===String(f.trackId)))newest.push(f);if(newest.length===4)break;}if(latestFeed&&!newest.some(x=>String(x.trackId)===String(latestFeed.trackId)))newest.unshift(latestFeed);newest.length=4;while(mapTracks.length<newest.length){const i=mapTracks.length,color=mapTrackColors[i],group=new THREE.Group();cityMap.add(group);const beacon=new THREE.Mesh(new THREE.CylinderGeometry(.025,.035,.58,10),new THREE.MeshBasicMaterial({color,transparent:true,opacity:.48}));beacon.position.y=.31;group.add(beacon);const dot=new THREE.Mesh(new THREE.SphereGeometry(.105,16,12),new THREE.MeshBasicMaterial({color,emissive:color,emissiveIntensity:1.2}));dot.position.y=.66;group.add(dot);const ring=new THREE.Mesh(new THREE.TorusGeometry(.2,.025,7,24),new THREE.MeshBasicMaterial({color,transparent:true,opacity:.8}));ring.rotation.x=Math.PI/2;ring.position.y=.08;group.add(ring);const route=MAP_ROUTES[i%MAP_ROUTES.length],points=[];for(let p=0;p<route.length;p+=3)points.push(new THREE.Vector3(route[p],.09,route[p+2]));const path=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points),new THREE.LineBasicMaterial({color,transparent:true,opacity:.6}));cityMap.add(path);const label=makeMapLabel('PISTE',color);cityMap.add(label);mapTracks.push({group,dot,ring,label,path,routePoints:points,feed:null,phase:i*.19});}newest.forEach((feed,i)=>{const item=mapTracks[i];item.feed=feed;item.label.material.map.dispose();item.label.material.map=makeMapLabel(`P${feed.trackId}`,mapTrackColors[i]).material.map;item.label.material.needsUpdate=true;});mapTracks.forEach((item,i)=>item.group.visible=i<newest.length);}
+const masterLight=new THREE.PointLight(0x9affc4,0,9,2);scene.add(masterLight);
+function refreshSeatColors(feed){
+  const result=consensus(feed),supporters=new Set(Object.values(result.groups).flat().map(a=>a.id));
+  seats.forEach((seat,i)=>{
+    const id=seatAgents[i].id,cat=result.findings[id],active=supporters.has(id),color=cat?new THREE.Color(voteColors[cat]):new THREE.Color(seatAgents[i].color);
+    seat.badge.material.color.copy(color);seat.badge.material.emissive.copy(color);seat.badge.material.emissiveIntensity=active?1.7:.4;
+    seat.torso.material.emissive.copy(color);seat.torso.material.emissiveIntensity=active?.32:.08;
+    seat.group.userData.supporting=active;
+  });
+  const masterColor=result.conflict?new THREE.Color('#ffad70'):new THREE.Color('#9affc4');seats[4].badge.material.color.copy(masterColor);seats[4].badge.material.emissive.copy(masterColor);seats[4].torso.material.emissive.copy(masterColor);seats[4].group.userData.conflict=result.conflict;
+}
+function feedFromRow(row){return {updatedAt:row.date_utc,trackId:row.piste,obs:{range_km:row.range_km,snr_db:row.snr_db,sigma_est_m2:row.sigma_est_m2,echo:row.echo,size_m_estimate:row.size_m_estimate,mass_kg_estimate:row.mass_kg_estimate,speed_ms:row.speed_ms,altitude_m:row.altitude_m,sound_db_simulated:row.sound_db_simulated,simulated_engines:row.simulated_engines,contour_simulated:row.contour_simulated,color_simulated:row.color_simulated},agents:{military:{report:row.agent_militaire},commercial:{report:row.agent_commercial},avian:{report:row.agent_aviaire},anti:{report:row.agent_anti_drone},master:{report:[row.master_ia,row.master_calcul].filter(Boolean).join('\n')}},findings:null};}
+function historyKey(f){return `${f.trackId}|${f.updatedAt}|${f.obs?.range_km}|${f.obs?.snr_db}`;}
+function addHistory(feed){if(!feed)return;const k=historyKey(feed),i=history.findIndex(x=>historyKey(x)===k);if(i>=0)history[i]=feed;else history.push(feed);history.sort((a,b)=>Date.parse(a.updatedAt)-Date.parse(b.updatedAt));if(history.length>500)history=history.slice(-500);renderTimeline();syncMapTracks();if(liveMode){selectedIndex=history.length-1;showSelected();}}
+function renderTimeline(){const range=document.getElementById('historyRange'),list=document.getElementById('historyList');range.max=Math.max(0,history.length-1);range.value=Math.max(0,selectedIndex);document.getElementById('historyLabel').textContent=history.length?`${liveMode?'DIRECT':'PAUSE'} · ${Math.max(0,selectedIndex)+1}/${history.length} · ${history.length} analyses`: 'Aucune piste enregistrée';list.innerHTML='';history.slice(-7).forEach((f,j)=>{const index=history.length-Math.min(7,history.length)+j,b=document.createElement('button');b.textContent=`Piste ${f.trackId} · ${new Date(f.updatedAt).toLocaleTimeString('fr-FR')}`;b.onclick=()=>selectHistory(index);list.appendChild(b);});document.getElementById('pauseLive').textContent=liveMode?'⏸ Pause':'▶ Reprendre le direct';refreshCompareOptions();}
+function refreshCompareOptions(){const a=document.getElementById('compareA'),b=document.getElementById('compareB'),oldA=a.value,oldB=b.value;for(const select of [a,b]){select.innerHTML='';history.forEach((f,i)=>{const option=document.createElement('option');option.value=String(i);option.textContent=`Piste ${f.trackId} · ${new Date(f.updatedAt).toLocaleTimeString('fr-FR')}`;select.appendChild(option);});}if(history.length){a.value=history.some((_,i)=>String(i)===oldA)?oldA:String(Math.max(0,history.length-2));b.value=history.some((_,i)=>String(i)===oldB)?oldB:String(history.length-1);}updateComparison();}
+function updateComparison(){const out=document.getElementById('compareResult'),ia=Number(document.getElementById('compareA').value),ib=Number(document.getElementById('compareB').value),fa=history[ia],fb=history[ib];if(!fa||!fb){out.textContent='Il faut au moins deux analyses dans la chronologie pour les comparer.';return;}const ca=consensus(fa),cb=consensus(fb),oa=fa.obs||{},ob=fb.obs||{},cat=x=>Object.entries(x.groups).map(([k,v])=>`${k} (${v.length})`).join(', ')||'aucune convergence';out.innerHTML=`<b>Piste ${fa.trackId}</b> · ${oa.range_km??'—'} km · ${oa.speed_ms??'—'} m/s · ${oa.echo||'—'} · avis : ${cat(ca)}<br><b>Piste ${fb.trackId}</b> · ${ob.range_km??'—'} km · ${ob.speed_ms??'—'} m/s · ${ob.echo||'—'} · avis : ${cat(cb)}<br>Master : ${ca.explanation===cb.explanation?'les conclusions convergent.':'les avis ou leur niveau de convergence diffèrent.'}`;}
+document.getElementById('compareToggle').onclick=()=>document.getElementById('comparePanel').classList.toggle('show');
+document.getElementById('compareA').onchange=updateComparison;document.getElementById('compareB').onchange=updateComparison;
+function showSelected(){if(selectedIndex<0||!history.length)return;const f=history[Math.min(selectedIndex,history.length-1)];applyFeed(f);refreshSeatColors(f);renderTimeline();}
+function selectHistory(index){liveMode=false;selectedIndex=Math.max(0,Math.min(index,history.length-1));showSelected();}
+document.getElementById('pauseLive').onclick=()=>{liveMode=!liveMode;if(liveMode){selectedIndex=history.length-1;showSelected();}else renderTimeline();};
+document.getElementById('prevTrack').onclick=()=>selectHistory(selectedIndex<=0?0:selectedIndex-1);
+document.getElementById('nextTrack').onclick=()=>selectHistory(selectedIndex>=history.length-1?history.length-1:selectedIndex+1);
+document.getElementById('historyRange').oninput=e=>selectHistory(+e.target.value);
+async function loadHistory(){try{const db=await new Promise((resolve,reject)=>{const req=indexedDB.open('radar-ville-agent-log',1);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);req.onupgradeneeded=()=>reject(new Error('journal absent'));});if(!db.objectStoreNames.contains('analyses'))return;const rows=await new Promise((resolve,reject)=>{const req=db.transaction('analyses','readonly').objectStore('analyses').getAll();req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});rows.sort((a,b)=>Date.parse(a.date_utc)-Date.parse(b.date_utc)).forEach(row=>addHistory(feedFromRow(row)));}catch{document.getElementById('historyLabel').textContent='Historique local indisponible · les nouvelles pistes seront ajoutées';}}
+loadHistory();
+function speakNext(){if(!latestFeed)return;const seq=[...agents.map(a=>a.id),'master'],id=seq[speakerIndex%seq.length],seatIndex=seatAgents.findIndex(a=>a.id===id),entry=latestFeed.agents?.[id];speakerIndex++;if(!entry?.report)return;const label=seatAgents[seatIndex].label,verdict=consensus(latestFeed);document.getElementById('speakerName').textContent=label+(id==='master'?` · ${verdict.conflict?'DÉSACCORD':'SYNTHÈSE'}`:'');document.getElementById('speakerText').textContent=String(id==='master'?`${verdict.explanation} ${entry.report}`:entry.report).replace(/\s+/g,' ').slice(0,240);document.getElementById('turnName').textContent=label+(id==='master'?' · Master résume':'');const bubble=document.getElementById('speech');bubble.classList.add('show');seats.forEach((s,i)=>{s.group.userData.talking=i===seatIndex;s.group.userData.listening=i!==seatIndex;});masterLight.position.set(seatAgents[seatIndex].id==='master'?0:seats[seatIndex].group.position.x,4.1,seatAgents[seatIndex].id==='master'?8:seats[seatIndex].group.position.z);masterLight.color.set(id==='master'&&verdict.conflict?0xffad70:seatAgents[seatIndex].color);masterLight.intensity=22;if(id==='master'){cityBase.material.color.set(verdict.conflict?0x392219:0x123e2b);cityBase.material.emissive=new THREE.Color(verdict.conflict?0x5c2413:0x0c492b);cityBase.material.emissiveIntensity=.7;}setTimeout(()=>{bubble.classList.remove('show');masterLight.intensity=0;seats.forEach(s=>{s.group.userData.talking=false;s.group.userData.listening=false;});},2600);}
+setInterval(speakNext,3000);
+
+const decorativeBars=new THREE.Group();scene.add(decorativeBars);
+for(let i=0;i<5;i++){
+  const bar=new THREE.Mesh(new THREE.BoxGeometry(2.8,.06,.06),mat(0x3b8f68,.3,.25,{emissive:0x174c34,emissiveIntensity:.7}));
+  bar.position.set(-5.6+i*2.8,.19,12.8);decorativeBars.add(bar);
+}
+
+function applyFeed(feed){
+  latestFeed=feed;drawDisplay(feed);
+  syncMapTracks();
+  refreshSeatColors(feed);
+  const link=document.getElementById('link'),text=document.getElementById('linkText');
+  if(!feed){link.classList.remove('live');text.textContent='En attente du radar…';document.getElementById('track').textContent='—';document.getElementById('age').textContent='—';return;}
+  link.classList.add('live');text.textContent='Flux radar reçu · agents synchronisés';
+  document.getElementById('track').textContent=`${feed.trackId} · ${feed.obs?.echo||'écho'}`;
+  document.getElementById('age').textContent=new Date(feed.updatedAt).toLocaleTimeString('fr-FR');
+}
+try{const initial=JSON.parse(localStorage.getItem(FEED_KEY)||'null');if(initial)addHistory(initial);else applyFeed(null);}catch{applyFeed(null);}
+window.addEventListener('storage',event=>{if(event.key===FEED_KEY){try{addHistory(JSON.parse(event.newValue||'null'));}catch{applyFeed(null);}}});
+setInterval(()=>{
+  if(!latestFeed)return;
+  const seconds=Math.max(0,Math.round((Date.now()-Date.parse(latestFeed.updatedAt))/1000));
+  document.getElementById('age').textContent=seconds<3?'à l’instant':`il y a ${seconds} s`;
+  if(seconds>45){document.getElementById('link').classList.remove('live');document.getElementById('linkText').textContent='Radar silencieux · dernière piste conservée';}
+},1000);
+
+document.getElementById('reset').onclick=()=>{camera.position.copy(homeCamera);controls.target.set(0,3.3,-1.6);controls.update();};
+window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+let clock=0;
+let lastFrame=0;
+function animate(now=0){requestAnimationFrame(animate);if(now-lastFrame<33)return;const elapsed=lastFrame?Math.min((now-lastFrame)/1000,.08):1/30;lastFrame=now;clock+=elapsed*.72;const flagPositions=flagGeometry.attributes.position;for(let i=0;i<flagPositions.count;i++){const x=flagBasePositions[i*3],y=flagBasePositions[i*3+1];flagPositions.setZ(i,flagBasePositions[i*3+2]+Math.sin(clock*2.2+x*2.1+y*.55)*.065*(x+1.65)/3.3);}flagPositions.needsUpdate=true;mapTracks.forEach(item=>{if(!item.group.visible)return;const points=item.routePoints,n=points.length,p=((clock*.055+item.phase)%1)*n,a=Math.floor(p),t=p-a,pos=points[a].clone().lerp(points[(a+1)%n],t);item.group.position.set(pos.x,0,pos.z);item.label.position.set(pos.x,1.08,pos.z);item.ring.scale.setScalar(1+.2*Math.sin(clock*4+item.phase));item.dot.material.emissiveIntensity=1+.4*Math.sin(clock*4+item.phase);});holoSweep.rotation.y=-clock*.42;holoPin.scale.setScalar(1+.16*Math.sin(clock*3));if(seats[4].group.userData.talking)holoGroup.scale.setScalar(1+.018*Math.sin(clock*5));else holoGroup.scale.setScalar(1);seats.forEach((s,i)=>{const talking=s.group.userData.talking,listening=s.group.userData.listening;s.head.position.y=2.86+Math.sin(clock*1.2+i)*.025+(talking?Math.abs(Math.sin(clock*8))*.08:0);s.head.rotation.x=talking?-.09*Math.sin(clock*8):Math.sin(clock*.7+i)*.025;s.torso.rotation.x=talking?-.055-Math.abs(Math.sin(clock*4))*.025:listening?-.035:0;s.arms.forEach(a=>{a.pivot.rotation.z=talking?a.side*(.4+.55*Math.abs(Math.sin(clock*5+i))):listening?a.side*.08:a.side*.015*Math.sin(clock+i);a.pivot.rotation.x=talking?-.25*Math.abs(Math.sin(clock*4+i)):0;});if(s.group.userData.supporting)s.badge.material.emissiveIntensity=1.1+.7*(.5+.5*Math.sin(clock*3+i));});controls.update();renderer.render(scene,camera);}
+animate();
+</script>
+</body>
+</html>
